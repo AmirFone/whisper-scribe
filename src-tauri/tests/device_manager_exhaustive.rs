@@ -277,7 +277,7 @@ fn test_classify_very_long_name() {
 
 #[test]
 fn test_classify_unicode_device_name() {
-    assert_eq!(classify("Amir's AirPods Pro"), "bluetooth");
+    assert_eq!(classify("John's AirPods Pro"), "bluetooth");
 }
 
 #[test]
