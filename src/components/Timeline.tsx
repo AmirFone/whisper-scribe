@@ -1,7 +1,9 @@
-import { For, Show } from "solid-js";
+import { For, Show, onMount } from "solid-js";
 import HourSlotCard from "./HourSlotCard";
 import AudioLevelBars from "./AudioLevelBars";
 import type { HourSlot } from "../App";
+
+let savedTimelineScroll = 0;
 
 interface TimelineProps {
   slots: HourSlot[];
@@ -23,9 +25,18 @@ function formatCountdown(secs: number): string {
 
 export default function Timeline(props: TimelineProps) {
   const circumference = 2 * Math.PI * 30;
+  let timelineRef: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (timelineRef) timelineRef.scrollTop = savedTimelineScroll;
+  });
+
+  function handleTimelineScroll() {
+    if (timelineRef) savedTimelineScroll = timelineRef.scrollTop;
+  }
 
   return (
-    <div class="timeline">
+    <div class="timeline" ref={timelineRef} onScroll={handleTimelineScroll}>
       <Show when={props.isTranscribing}>
         <div class="transcribing-banner">
           <div class="transcribing-spinner" />

@@ -25,3 +25,8 @@ logs/
 
 # Claude Code
 .claude/data/
+
+# Generated
+src-tauri/gen/
+__pycache__/
+*.pyc

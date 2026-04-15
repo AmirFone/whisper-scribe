@@ -15,7 +15,10 @@ def ensure_package(name):
         __import__(name.replace("-", "_"))
     except ImportError:
         sys.stderr.write(f"Installing {name}...\n")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", name, "--quiet"])
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", name,
+            "--quiet", "--break-system-packages"
+        ])
 
 ensure_package("mlx-whisper")
 
@@ -33,11 +36,7 @@ except Exception:
 
 MODEL = "mlx-community/whisper-large-v3-mlx"
 
-INITIAL_PROMPT = (
-    "Transcribe the following spoken English conversation. "
-    "Use standard punctuation and capitalization. "
-    "This is a real conversation, not a video or podcast."
-)
+INITIAL_PROMPT = "Spoken English conversation with standard punctuation."
 
 # Hallucination patterns — only match REPEATED phrases (3+), not single occurrences
 HALLUCINATION_PATTERNS = [
@@ -51,6 +50,7 @@ HALLUCINATION_PATTERNS = [
     r"(?i)^[\s.,:;!?]*$",
     r"(?i)^\s*(um|uh|hmm|ah)[.,]?\s*$",
     r"(?i)\b(\w+[.,!]?\s*)\1{4,}",  # Any single word repeated 5+ times
+    r"(?i)^[\s.]*(?:(?:thank\s*you|you)[.,!]?\s*){3,}[\s.]*$",  # Entire text is just "thank you" / "you" mixed
     r"(?i)^\s*unintelligible\s*$",
     r"(?i)^\s*\[.*\]\s*$",
     r"(?i)^\s*(music|applause|laughter)\s*$",
@@ -102,15 +102,73 @@ def clean_hallucinations(text):
 
     cleaned = text.strip()
 
+    # Phase 0a: Strip any initial_prompt leak (old and new versions)
+    cleaned = re.sub(
+        r"(?i)this is a real conversation,?\s*not a video or podcast\.?\s*",
+        "", cleaned
+    )
+    cleaned = re.sub(
+        r"(?i)spoken english conversation with standard punctuation\.?\s*",
+        "", cleaned
+    )
+
+    # Phase 0b: Strip other known hallucination sentences
+    for phrase in [
+        r"(?i)I'm not sure if I'm going to be able to do i\.?t\.?\s*",
+        r"(?i)I'm not sure if I'm going to be able to do that\.?\s*",
+    ]:
+        cleaned = re.sub(phrase, "", cleaned)
+
+    # Phase 0c: If the ENTIRE text is just "thank you" / "you" noise, discard
+    thank_you_noise = re.sub(r"(?i)\b(thank\s*you|you)\b", "", cleaned)
+    thank_you_noise = re.sub(r"[.,;:!?\s]+", "", thank_you_noise)
+    if len(thank_you_noise) < 3:
+        return ""
+
+    # Phase 1: Remove hardcoded hallucination patterns
     for pattern in COMPILED_PATTERNS:
         cleaned = pattern.sub("", cleaned)
 
-    # Repeated long phrases (10+ chars repeated 3+ times)
-    cleaned = re.sub(r"(?i)(.{10,}?)[.,!?]?\s*(\1[.,!?]?\s*){2,}", r"\1.", cleaned)
+    # Phase 2: Generic repeated SENTENCE collapse
+    # Catches: "Thank you. Thank you. Thank you." → "Thank you."
+    # Catches: "I'll blame it on my life. I'll blame it on my life." → "I'll blame it on my life."
+    # Catches: "I love you guys. I love you guys. I love you guys." → "I love you guys."
+    # Any sentence repeated 2+ times with . or ! or ? separator → keep one
+    cleaned = re.sub(
+        r"(?i)([^.!?]{4,}[.!?])\s*(\1\s*){1,}",
+        r"\1 ",
+        cleaned
+    )
 
+    # Phase 3: Generic repeated PHRASE with "and" connector
+    # Catches: "hitting someone and hitting someone and hitting someone" → "hitting someone"
+    cleaned = re.sub(
+        r"(?i)\b(.{4,}?)\s+and\s+(\1\s+and\s+){1,}\1",
+        r"\1",
+        cleaned
+    )
+
+    # Phase 4: Generic repeated WORD collapse
+    # Catches: "you you you you you you" → "you"
+    cleaned = re.sub(
+        r"\b(\w+)\s+(\1\s+){2,}",
+        r"\1 ",
+        cleaned
+    )
+
+    # Phase 5: Repeated short phrases (3+ words repeated 2+ times)
+    # Catches: "Thank you. Thank you." where each is short
+    cleaned = re.sub(
+        r"(?i)(\b\w+(?:\s+\w+){1,4})[.,!?]?\s*(\1[.,!?]?\s*){1,}",
+        r"\1. ",
+        cleaned
+    )
+
+    # Phase 6: Clean up whitespace and punctuation artifacts
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     cleaned = re.sub(r"^[.,;:!?\s]+", "", cleaned)
     cleaned = re.sub(r"[.,;:!?\s]+$", "", cleaned).strip()
+    cleaned = re.sub(r"([.!?])\s*\1+", r"\1", cleaned)  # ".. .." → "."
 
     if len(cleaned) < 3:
         return ""

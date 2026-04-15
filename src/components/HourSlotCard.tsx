@@ -1,4 +1,4 @@
-import { createSignal, createEffect } from "solid-js";
+import { createSignal, createEffect, onMount, onCleanup } from "solid-js";
 import type { HourSlot } from "../App";
 
 interface HourSlotCardProps {
@@ -7,8 +7,10 @@ interface HourSlotCardProps {
   searchQuery?: string;
 }
 
+// Persist scroll positions across re-renders
+const scrollPositions = new Map<number, number>();
+
 function formatHourRange(hourKey: string): string {
-  // hourKey is "2026-04-14T12" format
   try {
     const parts = hourKey.split("T");
     const date = parts[0];
@@ -64,6 +66,24 @@ export default function HourSlotCard(props: HourSlotCardProps) {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  // Restore scroll position on mount
+  onMount(() => {
+    if (textRef) {
+      const saved = scrollPositions.get(props.slot.id);
+      if (saved !== undefined) {
+        textRef.scrollTop = saved;
+      }
+    }
+  });
+
+  // Save scroll position on every scroll
+  function handleScroll() {
+    if (textRef) {
+      scrollPositions.set(props.slot.id, textRef.scrollTop);
+    }
+  }
+
+  // Scroll to search highlight
   createEffect(() => {
     if (props.searchQuery && textRef) {
       const mark = textRef.querySelector(".search-highlight");
@@ -84,7 +104,7 @@ export default function HourSlotCard(props: HourSlotCardProps) {
           </button>
         </div>
       </div>
-      <div class="card-text-scroll" ref={textRef}>
+      <div class="card-text-scroll" ref={textRef} onScroll={handleScroll}>
         <p class="card-text">
           {parts().map((part) =>
             typeof part === "string" ? part : <mark class="search-highlight">{part.text}</mark>
