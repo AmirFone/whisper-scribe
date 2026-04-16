@@ -10,17 +10,22 @@ import wave
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-def ensure_package(name):
+def ensure_deps():
+    """Install pinned dependencies from requirements.txt if mlx_whisper is not
+    already importable. Using a requirements file with pinned versions avoids
+    unpredictable upgrades and removes the need for ``--break-system-packages``
+    (the previous approach)."""
     try:
-        __import__(name.replace("-", "_"))
+        import mlx_whisper as _  # noqa: F401
     except ImportError:
-        sys.stderr.write(f"Installing {name}...\n")
+        req_path = os.path.join(os.path.dirname(__file__), "requirements.txt")
+        sys.stderr.write(f"Installing dependencies from {req_path}...\n")
         subprocess.check_call([
-            sys.executable, "-m", "pip", "install", name,
-            "--quiet", "--break-system-packages"
+            sys.executable, "-m", "pip", "install",
+            "-r", req_path, "--quiet",
         ])
 
-ensure_package("mlx-whisper")
+ensure_deps()
 
 import mlx_whisper
 
@@ -28,10 +33,9 @@ import mlx_whisper
 _vad_model = None
 _vad_available = False
 try:
-    ensure_package("silero-vad")
     from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
     _vad_available = True
-except Exception:
+except ImportError:
     sys.stderr.write("silero-vad not available, using RMS-only silence detection\n")
 
 MODEL = "mlx-community/whisper-large-v3-mlx"
