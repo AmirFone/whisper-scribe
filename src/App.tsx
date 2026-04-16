@@ -41,7 +41,8 @@ export default function App() {
   const [copiedAll, setCopiedAll] = createSignal(false);
 
   async function loadTimeline() {
-    if (filterActive()) return; // Don't override filtered view
+    if (filterActive()) return;
+    if (searchQuery().trim()) return; // Don't override search results
     try {
       const results = await invoke<HourSlot[]>("get_timeline", { limit: 50, offset: 0 });
       setSlots(results);
@@ -50,7 +51,13 @@ export default function App() {
 
   async function searchSlots(query: string) {
     setFilterActive(false);
-    if (!query.trim()) { loadTimeline(); return; }
+    if (!query.trim()) {
+      try {
+        const results = await invoke<HourSlot[]>("get_timeline", { limit: 50, offset: 0 });
+        setSlots(results);
+      } catch (_) {}
+      return;
+    }
     try {
       const results = await invoke<HourSlot[]>("search_transcriptions", { query });
       setSlots(results);
