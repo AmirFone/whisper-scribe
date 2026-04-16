@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "whisper_scribe_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "whisper-scribe"
@@ -16,15 +16,16 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
-tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 window-vibrancy = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+# Only `time` (for `sleep`) and `macros` (for `#[tauri::command] async`) are
+# used. `full` pulled every Tokio subsystem — net, fs, signal, process — with
+# no callers.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 cpal = "0.15"
-rtrb = "0.3"
 rubato = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -44,3 +45,9 @@ tempfile = "3"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+# Enables the quarantined `functional_e2e.rs` + `storage_exhaustive.rs`
+# integration tests, which target the legacy `transcriptions` schema that
+# pre-dates the `hour_slots` migration. The real regression suite
+# (`storage_integration.rs`) runs unconditionally and tests the public
+# `Storage` API. Reach for this feature only when validating migration code.
+legacy_schema_tests = []
