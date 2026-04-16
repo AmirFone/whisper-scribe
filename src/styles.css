@@ -493,6 +493,19 @@ body {
   background: radial-gradient(circle at 35% 35%, #ffb347, #ff9f0a);
   box-shadow: 0 0 6px rgba(255,159,10,0.30);
 }
+.status-dot.disk-error {
+  background: radial-gradient(circle at 35% 35%, #ffb347, #ff9f0a);
+  box-shadow: 0 0 6px rgba(255,159,10,0.30);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+.status-disk-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: rgba(255,159,10,0.85);
+  font-weight: 600;
+}
 .status-dot.idle {
   background: radial-gradient(circle at 35% 35%, rgba(255,255,255,0.30), rgba(255,255,255,0.15));
 }
