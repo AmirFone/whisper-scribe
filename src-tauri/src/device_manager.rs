@@ -1,90 +1,54 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportType {
-    Usb,
-    Bluetooth,
-    BuiltIn,
-    Unknown,
-}
+/// Substrings that identify a Bluetooth audio device. Bluetooth inputs trigger
+/// the A2DP→HFP codec switch on macOS, which degrades all system audio output
+/// quality, so we skip them entirely.
+pub const BLUETOOTH_KEYWORDS: &[&str] =
+    &["airpods", "bluetooth", "beats", "bose", "sony wh", "sony wf", "jabra"];
 
-#[derive(Debug, Clone)]
-pub struct AudioDevice {
-    pub name: String,
-    pub transport: TransportType,
-    pub priority: u8,
-}
+/// Substrings that identify the macOS built-in microphone.
+pub const BUILTIN_KEYWORDS: &[&str] = &["macbook", "built-in", "internal"];
 
-impl AudioDevice {
-    fn new(name: String, transport: TransportType) -> Self {
-        let priority = match transport {
-            TransportType::Usb => 0,
-            TransportType::Bluetooth => 1,
-            TransportType::BuiltIn => 2,
-            TransportType::Unknown => 3,
-        };
-        Self {
-            name,
-            transport,
-            priority,
-        }
-    }
-}
-
-pub fn classify_device(name: &str) -> TransportType {
+pub fn is_bluetooth_device(name: &str) -> bool {
     let lower = name.to_lowercase();
-    if lower.contains("airpods")
-        || lower.contains("bluetooth")
-        || lower.contains("beats")
-        || lower.contains("bose")
-        || lower.contains("sony wh")
-        || lower.contains("sony wf")
-        || lower.contains("jabra")
-    {
-        TransportType::Bluetooth
-    } else if lower.contains("usb")
-        || lower.contains("yeti")
-        || lower.contains("snowball")
-        || lower.contains("rode")
-        || lower.contains("blue")
-        || lower.contains("focusrite")
-        || lower.contains("scarlett")
-    {
-        TransportType::Usb
-    } else if lower.contains("macbook")
-        || lower.contains("built-in")
-        || lower.contains("internal")
-    {
-        TransportType::BuiltIn
-    } else {
-        TransportType::Unknown
-    }
+    BLUETOOTH_KEYWORDS.iter().any(|kw| lower.contains(kw))
 }
 
-pub fn list_input_devices() -> Vec<AudioDevice> {
-    let host = cpal::default_host();
-    let mut devices = Vec::new();
+pub fn is_builtin_device(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    BUILTIN_KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
 
-    if let Ok(input_devices) = host.input_devices() {
-        for device in input_devices {
-            let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-            let transport = classify_device(&name);
-            devices.push(AudioDevice::new(name, transport));
+/// Pick the best input device, preferring built-in mic over arbitrary inputs
+/// and skipping all Bluetooth devices. Falls back to the host's default input
+/// if no preferred device is available.
+pub fn select_best_input(host: &cpal::Host) -> Option<cpal::Device> {
+    let devices = host.input_devices().ok()?;
+    let mut built_in: Option<cpal::Device> = None;
+    let mut fallback: Option<cpal::Device> = None;
+
+    for device in devices {
+        let name = device.name().unwrap_or_default();
+
+        if is_bluetooth_device(&name) {
+            log::info!("Skipping Bluetooth input: {name}");
+            continue;
+        }
+
+        if is_builtin_device(&name) {
+            log::info!("Found built-in mic: {name}");
+            built_in = Some(device);
+        } else if fallback.is_none() {
+            fallback = Some(device);
         }
     }
 
-    devices.sort_by_key(|d| d.priority);
-    devices
-}
-
-pub fn select_best_device() -> Option<String> {
-    let devices = list_input_devices();
-    devices.first().map(|d| d.name.clone())
+    built_in.or(fallback).or_else(|| host.default_input_device())
 }
 
 pub fn get_current_device_name() -> String {
     let host = cpal::default_host();
-    host.default_input_device()
+    select_best_input(&host)
         .and_then(|d| d.name().ok())
         .unwrap_or_else(|| "None".to_string())
 }
@@ -94,47 +58,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_classify_airpods() {
-        assert_eq!(classify_device("AirPods Pro"), TransportType::Bluetooth);
+    fn test_is_bluetooth_airpods() {
+        assert!(is_bluetooth_device("AirPods Pro"));
+        assert!(is_bluetooth_device("Beats Studio"));
+        assert!(is_bluetooth_device("Sony WH-1000XM5"));
+        assert!(is_bluetooth_device("Jabra Evolve"));
     }
 
     #[test]
-    fn test_classify_usb_mic() {
-        assert_eq!(classify_device("Blue Yeti USB"), TransportType::Usb);
-        assert_eq!(classify_device("Rode NT-USB"), TransportType::Usb);
+    fn test_is_bluetooth_negatives() {
+        assert!(!is_bluetooth_device("MacBook Pro Microphone"));
+        assert!(!is_bluetooth_device("Blue Yeti USB"));
+        assert!(!is_bluetooth_device(""));
     }
 
     #[test]
-    fn test_classify_builtin() {
-        assert_eq!(
-            classify_device("MacBook Pro Microphone"),
-            TransportType::BuiltIn
-        );
-    }
-
-    #[test]
-    fn test_classify_unknown() {
-        assert_eq!(
-            classify_device("Some Random Device"),
-            TransportType::Unknown
-        );
-    }
-
-    #[test]
-    fn test_device_priority_ordering() {
-        let usb = AudioDevice::new("USB Mic".into(), TransportType::Usb);
-        let bt = AudioDevice::new("AirPods".into(), TransportType::Bluetooth);
-        let builtin = AudioDevice::new("MacBook Mic".into(), TransportType::BuiltIn);
-
-        assert!(usb.priority < bt.priority);
-        assert!(bt.priority < builtin.priority);
-    }
-
-    #[test]
-    fn test_list_returns_sorted_by_priority() {
-        let devices = list_input_devices();
-        for w in devices.windows(2) {
-            assert!(w[0].priority <= w[1].priority);
-        }
+    fn test_is_builtin() {
+        assert!(is_builtin_device("MacBook Pro Microphone"));
+        assert!(is_builtin_device("Built-in Microphone"));
+        assert!(is_builtin_device("Internal Mic"));
+        assert!(!is_builtin_device("AirPods Pro"));
     }
 }
