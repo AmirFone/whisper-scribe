@@ -1,17 +1,31 @@
-use crate::AppState;
+use crate::audio_engine;
+use crate::device_manager;
+use crate::state::AppState;
+use crate::storage::HourSlot;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tauri::ipc::Channel;
+use tokio::time::{sleep, Duration};
 
-#[derive(serde::Serialize, Clone)]
-pub struct HourSlotPayload {
-    pub id: i64,
-    pub hour_key: String,
-    pub text: String,
-    pub start_time: String,
-    pub last_updated: String,
-    pub device: String,
-    pub segment_count: i64,
+/// Maximum number of hour slots returned by a single get_timeline call.
+/// Prevents an unbounded query from a malformed frontend request.
+const MAX_TIMELINE_LIMIT: i64 = 200;
+
+/// Clamp the frontend-supplied `(limit, offset)` into the range the SQL query
+/// is known to tolerate. Extracted so the clamping contract is testable
+/// without spinning up a full Tauri `State` — the command itself is an
+/// `async` Tauri handler and cannot be invoked directly from a unit test.
+fn clamp_timeline_params(limit: i64, offset: i64) -> (i64, i64) {
+    (limit.clamp(1, MAX_TIMELINE_LIMIT), offset.max(0))
 }
+
+// Frontend invokes use camelCase for params; Rust command params are snake_case;
+// Tauri auto-converts at the IPC boundary (see
+// https://v2.tauri.app/develop/calling-rust/#passing-arguments).
+//
+// Payload types: `HourSlot` is re-exported from `storage` and serialized with
+// its default snake_case fields. Keep adding fields there when Rust and the
+// frontend agree on shape.
 
 #[derive(serde::Serialize)]
 pub struct StatusPayload {
@@ -23,6 +37,11 @@ pub struct StatusPayload {
     pub segment_duration_secs: u64,
     pub audio_level: u32,
     pub is_transcribing: bool,
+    /// True when the audio engine could not open a new WAV writer (disk full,
+    /// permissions, etc.) — every captured sample is being dropped until the
+    /// next rotation attempt. Surfaced so the UI can warn; an always-`false`
+    /// value means the recording path is healthy.
+    pub audio_disk_error: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -35,58 +54,36 @@ pub async fn get_timeline(
     state: tauri::State<'_, Arc<AppState>>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<HourSlotPayload>, String> {
-    let slots = state.storage.get_hour_slots(limit, offset)?;
-    Ok(slots
-        .into_iter()
-        .map(|s| HourSlotPayload {
-            id: s.id,
-            hour_key: s.hour_key,
-            text: s.text,
-            start_time: s.start_time,
-            last_updated: s.last_updated,
-            device: s.device,
-            segment_count: s.segment_count,
-        })
-        .collect())
+) -> Result<Vec<HourSlot>, String> {
+    let (limit, offset) = clamp_timeline_params(limit, offset);
+    state.storage.get_hour_slots(limit, offset)
 }
 
 #[tauri::command]
 pub async fn search_transcriptions(
     state: tauri::State<'_, Arc<AppState>>,
     query: String,
-) -> Result<Vec<HourSlotPayload>, String> {
-    let slots = state.storage.search_hour_slots(&query)?;
-    Ok(slots
-        .into_iter()
-        .map(|s| HourSlotPayload {
-            id: s.id,
-            hour_key: s.hour_key,
-            text: s.text,
-            start_time: s.start_time,
-            last_updated: s.last_updated,
-            device: s.device,
-            segment_count: s.segment_count,
-        })
-        .collect())
+) -> Result<Vec<HourSlot>, String> {
+    state.storage.search_hour_slots(&query)
 }
 
 #[tauri::command]
 pub async fn get_status(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<StatusPayload, String> {
-    let is_paused = *state.is_paused.lock();
+    let is_paused = state.is_paused();
     let is_recording = !is_paused;
-    let device_name = crate::device_manager::get_current_device_name();
+    let device_name = device_manager::get_current_device_name();
     let slots_count = state.storage.count().unwrap_or(0);
 
-    let recording_start = state.recording_started_at.lock();
-    let elapsed = recording_start
+    let elapsed = state
+        .segment_started_at()
         .map(|t| (chrono::Utc::now() - t).num_seconds().max(0) as u64)
         .unwrap_or(0);
 
-    let audio_level = crate::audio_engine::AUDIO_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
-    let is_transcribing = state.is_transcribing.load(std::sync::atomic::Ordering::Relaxed);
+    let audio_level = state.audio_level();
+    let is_transcribing = state.is_transcribing.load(Ordering::Relaxed);
+    let audio_disk_error = state.audio_disk_error();
 
     Ok(StatusPayload {
         is_recording,
@@ -94,9 +91,10 @@ pub async fn get_status(
         device_name,
         slots_count,
         segment_seconds_elapsed: elapsed,
-        segment_duration_secs: crate::audio_engine::segment_duration_secs(),
+        segment_duration_secs: audio_engine::segment_duration_secs(),
         audio_level,
         is_transcribing,
+        audio_disk_error,
     })
 }
 
@@ -105,12 +103,8 @@ pub async fn get_slots_by_date_range(
     state: tauri::State<'_, Arc<AppState>>,
     from_key: String,
     to_key: String,
-) -> Result<Vec<HourSlotPayload>, String> {
-    let slots = state.storage.get_slots_by_date_range(&from_key, &to_key)?;
-    Ok(slots.into_iter().map(|s| HourSlotPayload {
-        id: s.id, hour_key: s.hour_key, text: s.text, start_time: s.start_time,
-        last_updated: s.last_updated, device: s.device, segment_count: s.segment_count,
-    }).collect())
+) -> Result<Vec<HourSlot>, String> {
+    state.storage.get_slots_by_date_range(&from_key, &to_key)
 }
 
 #[tauri::command]
@@ -121,37 +115,59 @@ pub async fn get_available_dates(
 }
 
 #[tauri::command]
-pub async fn subscribe_audio_level(channel: Channel<AudioLevelEvent>) {
+pub async fn subscribe_audio_level(
+    state: tauri::State<'_, Arc<AppState>>,
+    channel: Channel<AudioLevelEvent>,
+) -> Result<(), String> {
+    let level = state.audio_level_arc();
     loop {
-        let level = crate::audio_engine::AUDIO_LEVEL.load(std::sync::atomic::Ordering::Relaxed);
-        if channel.send(AudioLevelEvent { level }).is_err() {
+        if channel.send(AudioLevelEvent { level: level.load(Ordering::Relaxed) }).is_err() {
             break;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(33)).await;
+        sleep(Duration::from_millis(33)).await;
     }
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn toggle_pause(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
-    let mut paused = state.is_paused.lock();
-    *paused = !*paused;
-    Ok(*paused)
+    Ok(state.toggle_pause())
 }
 
-#[tauri::command]
-pub async fn copy_to_clipboard(text: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-        let mut child = Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("pbcopy: {e}"))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(text.as_bytes()).map_err(|e| format!("{e}"))?;
-        }
-        child.wait().map_err(|e| format!("{e}"))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clamp_timeline_params_enforces_upper_bound() {
+        // #given a frontend request for way more than we allow
+        // #when we clamp
+        let (limit, offset) = clamp_timeline_params(10_000, 0);
+        // #then the limit is capped at MAX_TIMELINE_LIMIT
+        assert_eq!(limit, MAX_TIMELINE_LIMIT);
+        assert_eq!(offset, 0);
     }
-    Ok(())
+
+    #[test]
+    fn test_clamp_timeline_params_rejects_non_positive_limit() {
+        // #given limit=0 and limit=negative
+        // #then both clamp to 1 (never returns a zero-row query)
+        assert_eq!(clamp_timeline_params(0, 0).0, 1);
+        assert_eq!(clamp_timeline_params(-5, 0).0, 1);
+    }
+
+    #[test]
+    fn test_clamp_timeline_params_negative_offset_is_floored_to_zero() {
+        // #given a negative offset (would otherwise explode SQLite)
+        let (_, offset) = clamp_timeline_params(50, -10);
+        // #then offset is pinned at 0
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_clamp_timeline_params_preserves_sane_values() {
+        // #given sensible values within the allowed band
+        assert_eq!(clamp_timeline_params(50, 20), (50, 20));
+        assert_eq!(clamp_timeline_params(MAX_TIMELINE_LIMIT, 0), (MAX_TIMELINE_LIMIT, 0));
+    }
 }
