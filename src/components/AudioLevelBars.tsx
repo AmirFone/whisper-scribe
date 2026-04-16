@@ -1,7 +1,9 @@
-import { createSignal, onMount, onCleanup } from "solid-js";
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { createSignal, onMount, onCleanup, type JSX } from "solid-js";
+import { Channel } from "@tauri-apps/api/core";
+import { tryInvoke } from "../utils/invoke";
+import type { AudioLevelEvent } from "../types";
 
-export default function AudioLevelBars() {
+export default function AudioLevelBars(): JSX.Element {
   const barCount = 7;
   const maxHeight = 32;
   const barWidth = 4;
@@ -25,19 +27,15 @@ export default function AudioLevelBars() {
     rafId = requestAnimationFrame(animate);
   }
 
-  onMount(async () => {
+  onMount(() => {
     rafId = requestAnimationFrame(animate);
 
-    const channel = new Channel<{ level: number }>();
-    channel.onmessage = (msg) => {
-      targetLevel = msg.level;
-    };
+    const channel = new Channel<AudioLevelEvent>();
+    channel.onmessage = (msg) => { targetLevel = msg.level; };
 
-    try {
-      await invoke("subscribe_audio_level", { channel });
-    } catch (_) {
-      // Command exited — normal teardown
-    }
+    // tryInvoke logs any startup failure; the command resolves when the
+    // backend's send loop exits (currently only on channel send-error).
+    void tryInvoke("subscribe_audio_level", { channel });
   });
 
   onCleanup(() => {

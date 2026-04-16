@@ -1,29 +1,21 @@
-import { createSignal, createEffect, Show, For } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
-import type { HourSlot } from "../App";
+import { createSignal, createEffect, Show, For, type JSX } from "solid-js";
+import type { HourSlot } from "../types";
+import { tryInvoke } from "../utils/invoke";
+import { formatRelativeDateWithWeekday } from "../utils/format";
+
+export interface FilterRange extends Record<string, unknown> {
+  fromKey: string;
+  toKey: string;
+}
 
 interface FilterPanelProps {
   visible: boolean;
   onClose: () => void;
-  onApply: (slots: HourSlot[]) => void;
+  onApply: (slots: HourSlot[], range: FilterRange) => void;
   onCopyAll: (text: string) => void;
 }
 
-function formatDateLabel(dateStr: string): string {
-  try {
-    const d = new Date(dateStr + "T00:00:00");
-    const today = new Date();
-    if (d.toDateString() === today.toDateString()) return "Today";
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-  } catch {
-    return dateStr;
-  }
-}
-
-export default function FilterPanel(props: FilterPanelProps) {
+export default function FilterPanel(props: FilterPanelProps): JSX.Element {
   const [dates, setDates] = createSignal<string[]>([]);
   const [selectedDate, setSelectedDate] = createSignal<string>("");
   const [fromHour, setFromHour] = createSignal(0);
@@ -31,36 +23,53 @@ export default function FilterPanel(props: FilterPanelProps) {
   const [filteredSlots, setFilteredSlots] = createSignal<HourSlot[]>([]);
   const [totalWords, setTotalWords] = createSignal(0);
 
-  createEffect(async () => {
-    if (props.visible) {
-      try {
-        const d = await invoke<string[]>("get_available_dates");
-        setDates(d);
-        if (d.length > 0 && !selectedDate()) setSelectedDate(d[0]);
-      } catch (_) {}
-    }
+  // Generation counter for the panel's own IPC calls. Prevents a slow date-
+  // range fetch from overwriting the results of a faster subsequent one when
+  // the user rapidly changes date or hour selectors.
+  let panelFetchGen = 0;
+
+  // Read `props.visible` synchronously so Solid's effect tracking sees it
+  // (dependency reads after `await` are NOT tracked — that was a latent bug).
+  createEffect(() => {
+    if (!props.visible) return;
+    void (async () => {
+      const d = await tryInvoke<string[]>("get_available_dates");
+      if (!d) return;
+      setDates(d);
+      if (d.length > 0 && !selectedDate()) setSelectedDate(d[0]);
+    })();
   });
 
-  createEffect(async () => {
+  function rangeKeys(): FilterRange | null {
     const date = selectedDate();
-    if (!date) return;
+    if (!date) return null;
+    return {
+      fromKey: `${date}T${fromHour().toString().padStart(2, "0")}`,
+      toKey: `${date}T${toHour().toString().padStart(2, "0")}`,
+    };
+  }
 
-    const fromKey = `${date}T${fromHour().toString().padStart(2, "0")}`;
-    const toKey = `${date}T${toHour().toString().padStart(2, "0")}`;
+  createEffect(() => {
+    // Read signals synchronously so Solid's tracking sees them (async reads
+    // after `await` are NOT tracked).
+    const range = rangeKeys();
+    if (!range) return;
 
-    try {
-      const slots = await invoke<HourSlot[]>("get_slots_by_date_range", {
-        fromKey,
-        toKey,
-      });
+    const myGen = ++panelFetchGen;
+    void (async () => {
+      const slots = await tryInvoke<HourSlot[]>("get_slots_by_date_range", range);
+      if (myGen !== panelFetchGen) return;
+      if (!slots) return;
       setFilteredSlots(slots);
       const words = slots.reduce((sum, s) => sum + s.text.split(/\s+/).length, 0);
       setTotalWords(words);
-    } catch (_) {}
+    })();
   });
 
   function handleApply() {
-    props.onApply(filteredSlots());
+    const range = rangeKeys();
+    if (!range) return;
+    props.onApply(filteredSlots(), range);
   }
 
   function handleCopyAll() {
@@ -94,7 +103,7 @@ export default function FilterPanel(props: FilterPanelProps) {
                     class={`filter-chip ${selectedDate() === d ? "active" : ""}`}
                     onClick={() => setSelectedDate(d)}
                   >
-                    {formatDateLabel(d)}
+                    {formatRelativeDateWithWeekday(d)}
                   </button>
                 )}
               </For>

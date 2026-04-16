@@ -1,6 +1,7 @@
-import { Show } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import AudioLevelBars from "./AudioLevelBars";
-import type { AppStatus } from "../App";
+import type { AppStatus } from "../types";
+import { formatCountdown } from "../utils/format";
 
 interface StatusBarProps {
   status: AppStatus;
@@ -8,13 +9,7 @@ interface StatusBarProps {
   secondsRemaining: number;
 }
 
-function formatCountdown(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-export default function StatusBar(props: StatusBarProps) {
+export default function StatusBar(props: StatusBarProps): JSX.Element {
   const stateLabel = () => {
     if (props.status.is_transcribing) return "Transcribing...";
     if (props.status.is_paused) return "Paused";
@@ -42,6 +37,16 @@ export default function StatusBar(props: StatusBarProps) {
         <AudioLevelBars />
         <span class="status-divider" />
         <span class="status-device">{props.status.device_name}</span>
+        <Show when={props.status.audio_disk_error}>
+          <span class="status-divider" />
+          <span
+            class="status-disk-error"
+            title="Failed to open a new audio segment file — captured samples are being dropped until the next rotation succeeds."
+          >
+            <span class="status-dot disk-error" />
+            Disk error
+          </span>
+        </Show>
       </div>
       <button class="pause-btn" onClick={props.onTogglePause}>
         {props.status.is_paused ? "Resume" : "Pause"}

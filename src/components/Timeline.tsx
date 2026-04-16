@@ -1,7 +1,8 @@
-import { For, Show, onMount } from "solid-js";
+import { For, Show, onMount, type JSX } from "solid-js";
 import HourSlotCard from "./HourSlotCard";
 import AudioLevelBars from "./AudioLevelBars";
-import type { HourSlot } from "../App";
+import type { HourSlot } from "../types";
+import { formatCountdown } from "../utils/format";
 
 let savedTimelineScroll = 0;
 
@@ -17,13 +18,7 @@ interface TimelineProps {
   searchQuery: string;
 }
 
-function formatCountdown(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-export default function Timeline(props: TimelineProps) {
+export default function Timeline(props: TimelineProps): JSX.Element {
   const circumference = 2 * Math.PI * 30;
   let timelineRef: HTMLDivElement | undefined;
 
@@ -75,7 +70,7 @@ export default function Timeline(props: TimelineProps) {
                 <svg viewBox="0 0 72 72">
                   <circle class="countdown-ring-bg" cx="36" cy="36" r="30" />
                   <circle class="countdown-ring-progress" cx="36" cy="36" r="30"
-                    stroke-dasharray={circumference}
+                    stroke-dasharray={String(circumference)}
                     stroke-dashoffset={circumference * (1 - props.progress)} />
                 </svg>
                 <span class="countdown-time">{formatCountdown(props.secondsRemaining)}</span>
