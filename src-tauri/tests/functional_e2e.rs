@@ -1,3 +1,10 @@
+//! Legacy-schema end-to-end tests. Build/run only when
+//! `cargo test --features legacy_schema_tests` is passed — the schema these
+//! tests exercise (`CREATE TABLE transcriptions (...)`) has not been in the
+//! live product since the `hour_slots` migration. The real regression guard
+//! lives in `storage_integration.rs`, which tests against the `Storage` API.
+#![cfg(feature = "legacy_schema_tests")]
+
 use chrono::{TimeZone, Utc};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use rusqlite::{params, Connection};

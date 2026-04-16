@@ -1,3 +1,11 @@
+//! Legacy-schema exhaustive SQL tests. Build/run only when
+//! `cargo test --features legacy_schema_tests` is passed. Everything here
+//! constructs its own `rusqlite::Connection` against the `transcriptions`
+//! table that predates the `hour_slots` migration — it does not import
+//! `whisper_scribe_lib::storage::Storage`. The new regression guard that
+//! tests the real public API lives in `storage_integration.rs`.
+#![cfg(feature = "legacy_schema_tests")]
+
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection};
 use tempfile::TempDir;
