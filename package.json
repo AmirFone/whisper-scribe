@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib --tests",
+    "test:all": "npm run typecheck && npm run test:rust && npm run build"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
