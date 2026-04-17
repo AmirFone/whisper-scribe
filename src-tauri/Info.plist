@@ -4,5 +4,7 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Whisper Scribe needs microphone access to record and transcribe audio.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Whisper Scribe captures screenshots to analyze and log what you're working on.</string>
 </dict>
 </plist>

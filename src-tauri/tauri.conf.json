@@ -43,12 +43,14 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "scripts/mlx_transcribe.py"
+      "scripts/mlx_transcribe.py",
+      "scripts/mlx_screen_analyze.py",
+      "scripts/screen_requirements.txt"
     ],
     "macOS": {
       "minimumSystemVersion": "14.0",
       "entitlements": "Entitlements.plist",
-      "signingIdentity": "-",
+      "signingIdentity": "Whisper Scribe Dev",
       "infoPlist": "Info.plist"
     }
   }
