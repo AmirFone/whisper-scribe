@@ -23,6 +23,7 @@ def ensure_deps():
         subprocess.check_call([
             sys.executable, "-m", "pip", "install",
             "-r", req_path, "--quiet",
+            "--user", "--break-system-packages",
         ])
 
 ensure_deps()
