@@ -63,6 +63,8 @@ pub struct AppState {
     /// sample until the next rotation attempt. `get_status` surfaces this so
     /// the UI can warn the user instead of the disk failure being invisible.
     audio_disk_error: Arc<AtomicBool>,
+    pub is_analyzing_screen: AtomicBool,
+    screen_capture_enabled: AtomicBool,
 }
 
 impl AppState {
@@ -76,6 +78,8 @@ impl AppState {
             audio_level: Arc::new(AtomicU32::new(0)),
             segment_started_at: Arc::new(AtomicI64::new(SEGMENT_STARTED_UNSET)),
             audio_disk_error: Arc::new(AtomicBool::new(false)),
+            is_analyzing_screen: AtomicBool::new(false),
+            screen_capture_enabled: AtomicBool::new(true),
         }
     }
 
@@ -124,6 +128,17 @@ impl AppState {
         let mut p = self.pause_state.lock();
         *p = reason;
         self.pause_flag.store(p.is_paused(), Ordering::Release);
+    }
+
+    pub fn screen_capture_enabled(&self) -> bool {
+        self.screen_capture_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn toggle_screen_capture(&self) -> bool {
+        let prev = self.screen_capture_enabled.load(Ordering::Acquire);
+        let new = !prev;
+        self.screen_capture_enabled.store(new, Ordering::Release);
+        new
     }
 
     /// Toggle between `None` and `Manual`. Any system-initiated pause gets
@@ -199,5 +214,54 @@ mod tests {
         // #when we clear to None
         state.set_pause(PauseReason::None);
         assert!(!state.is_paused());
+    }
+
+    #[test]
+    fn test_screen_capture_enabled_default() {
+        // #given a fresh state
+        let (state, _dir) = make_state();
+
+        // #then screen capture is enabled by default
+        assert!(state.screen_capture_enabled());
+    }
+
+    #[test]
+    fn test_toggle_screen_capture() {
+        // #given a fresh state with screen capture enabled
+        let (state, _dir) = make_state();
+        assert!(state.screen_capture_enabled());
+
+        // #when we toggle off
+        let enabled = state.toggle_screen_capture();
+
+        // #then it returns false and reads false
+        assert!(!enabled);
+        assert!(!state.screen_capture_enabled());
+
+        // #when we toggle back on
+        let enabled = state.toggle_screen_capture();
+        assert!(enabled);
+        assert!(state.screen_capture_enabled());
+    }
+
+    #[test]
+    fn test_is_analyzing_screen_default() {
+        // #given a fresh state
+        let (state, _dir) = make_state();
+
+        // #then is_analyzing_screen starts false
+        assert!(!state.is_analyzing_screen.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_is_analyzing_screen_can_be_set() {
+        // #given a fresh state
+        let (state, _dir) = make_state();
+
+        // #when we set it to true
+        state.is_analyzing_screen.store(true, Ordering::Relaxed);
+
+        // #then it reads true
+        assert!(state.is_analyzing_screen.load(Ordering::Relaxed));
     }
 }

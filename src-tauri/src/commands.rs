@@ -42,6 +42,8 @@ pub struct StatusPayload {
     /// next rotation attempt. Surfaced so the UI can warn; an always-`false`
     /// value means the recording path is healthy.
     pub audio_disk_error: bool,
+    pub is_screen_capture_enabled: bool,
+    pub is_analyzing_screen: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -85,6 +87,9 @@ pub async fn get_status(
     let is_transcribing = state.is_transcribing.load(Ordering::Relaxed);
     let audio_disk_error = state.audio_disk_error();
 
+    let is_screen_capture_enabled = state.screen_capture_enabled();
+    let is_analyzing_screen = state.is_analyzing_screen.load(Ordering::Relaxed);
+
     Ok(StatusPayload {
         is_recording,
         is_paused,
@@ -95,6 +100,8 @@ pub async fn get_status(
         audio_level,
         is_transcribing,
         audio_disk_error,
+        is_screen_capture_enabled,
+        is_analyzing_screen,
     })
 }
 
@@ -132,6 +139,47 @@ pub async fn subscribe_audio_level(
 #[tauri::command]
 pub async fn toggle_pause(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, String> {
     Ok(state.toggle_pause())
+}
+
+#[tauri::command]
+pub async fn get_screen_timeline(
+    state: tauri::State<'_, Arc<AppState>>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<HourSlot>, String> {
+    let (limit, offset) = clamp_timeline_params(limit, offset);
+    state.storage.get_screen_slots(limit, offset)
+}
+
+#[tauri::command]
+pub async fn search_screen_context(
+    state: tauri::State<'_, Arc<AppState>>,
+    query: String,
+) -> Result<Vec<HourSlot>, String> {
+    state.storage.search_screen_slots(&query)
+}
+
+#[tauri::command]
+pub async fn get_screen_slots_by_date_range(
+    state: tauri::State<'_, Arc<AppState>>,
+    from_key: String,
+    to_key: String,
+) -> Result<Vec<HourSlot>, String> {
+    state.storage.get_screen_slots_by_date_range(&from_key, &to_key)
+}
+
+#[tauri::command]
+pub async fn get_screen_available_dates(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<String>, String> {
+    state.storage.get_screen_available_dates()
+}
+
+#[tauri::command]
+pub async fn toggle_screen_capture(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
+    Ok(state.toggle_screen_capture())
 }
 
 #[cfg(test)]

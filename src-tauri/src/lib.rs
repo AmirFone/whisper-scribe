@@ -5,6 +5,9 @@ mod device_manager;
 mod events;
 mod pipeline;
 mod power_monitor;
+mod screen_analyzer;
+mod screen_capture;
+mod screen_pipeline;
 mod shortcuts;
 // `state` and `storage` are public so integration tests in `tests/` can pin
 // their contract against the real API (see `tests/storage_integration.rs`).
@@ -13,6 +16,15 @@ pub mod state;
 pub mod storage;
 mod transcriber;
 mod tray;
+
+// Thin re-exports for integration tests. The screen_capture module stays
+// crate-private; only the testable subset is exposed here.
+pub fn screen_capture_cleanup(dir: &std::path::Path, max_age: std::time::Duration) {
+    screen_capture::cleanup_old_screenshots(dir, max_age);
+}
+pub fn screen_capture_has_permission() -> bool {
+    screen_capture::has_screen_capture_permission()
+}
 
 use state::AppState;
 use std::sync::Arc;
@@ -54,6 +66,10 @@ pub fn run() {
             std::fs::create_dir_all(&audio_dir)
                 .map_err(|e| format!("Failed to create audio dir: {e}"))?;
 
+            let screenshots_dir = data_dir.join("screenshots");
+            std::fs::create_dir_all(&screenshots_dir)
+                .map_err(|e| format!("Failed to create screenshots dir: {e}"))?;
+
             let storage = storage::Storage::new(&db_path)
                 .map_err(|e| format!("Failed to init storage: {e}"))?;
 
@@ -71,6 +87,12 @@ pub fn run() {
                 pipeline::start(app_handle, state_clone, audio_dir);
             });
 
+            let screen_app_handle = app.handle().clone();
+            let screen_state = app_state.clone();
+            std::thread::spawn(move || {
+                screen_pipeline::start(screen_app_handle, screen_state, screenshots_dir);
+            });
+
             tray::setup(app)?;
 
             Ok(())
@@ -83,6 +105,11 @@ pub fn run() {
             commands::subscribe_audio_level,
             commands::get_slots_by_date_range,
             commands::get_available_dates,
+            commands::get_screen_timeline,
+            commands::search_screen_context,
+            commands::get_screen_slots_by_date_range,
+            commands::get_screen_available_dates,
+            commands::toggle_screen_capture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
