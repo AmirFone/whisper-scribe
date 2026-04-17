@@ -1,12 +1,13 @@
 import { createSignal, createEffect, createMemo, onCleanup, type JSX } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import DragHandle from "./components/DragHandle";
+import ModeToggle, { type ViewMode } from "./components/ModeToggle";
 import SearchBar from "./components/SearchBar";
 import FilterPanel, { type FilterRange } from "./components/FilterPanel";
 import Timeline from "./components/Timeline";
 import StatusBar from "./components/StatusBar";
 import type { HourSlot, AppStatus } from "./types";
-import { TRANSCRIPTION_UPDATED } from "./events";
+import { TRANSCRIPTION_UPDATED, SCREEN_CONTEXT_UPDATED } from "./events";
 import { tryInvoke } from "./utils/invoke";
 
 const STATUS_POLL_MS = 1000;
@@ -22,6 +23,8 @@ const INITIAL_STATUS: AppStatus = {
   audio_level: 0,
   is_transcribing: false,
   audio_disk_error: false,
+  is_screen_capture_enabled: true,
+  is_analyzing_screen: false,
 };
 
 export default function App(): JSX.Element {
@@ -31,20 +34,9 @@ export default function App(): JSX.Element {
   const [localElapsed, setLocalElapsed] = createSignal(0);
   const [filterVisible, setFilterVisible] = createSignal(false);
   const [filterActive, setFilterActive] = createSignal(false);
-  // The date/hour range that backs the active filter view. We keep it so the
-  // `TRANSCRIPTION_UPDATED` event can re-run the query — without this, new
-  // segments arriving while a filter was active were silently dropped from
-  // the visible view.
   const [filterRange, setFilterRange] = createSignal<FilterRange | null>(null);
+  const [viewMode, setViewMode] = createSignal<ViewMode>("transcription");
 
-  // Monotonic generation counter for all IPC calls that resolve into
-  // `setSlots`. Every fetch captures a generation before the await; any
-  // user mutation (filter apply, filter clear, new search) bumps the
-  // counter, which causes every older in-flight response to be discarded
-  // instead of overwriting whatever is currently on screen. One abstraction
-  // covers the three otherwise-separate race windows: refreshActiveFilter
-  // vs clear, debounced search vs TRANSCRIPTION_UPDATED, and filter apply
-  // vs background reload.
   let fetchGen = 0;
 
   async function fetchIntoSlots(
@@ -56,16 +48,29 @@ export default function App(): JSX.Element {
     if (results) setSlots(results);
   }
 
+  function timelineCmd(): string {
+    return viewMode() === "screen" ? "get_screen_timeline" : "get_timeline";
+  }
+  function searchCmd(): string {
+    return viewMode() === "screen" ? "search_screen_context" : "search_transcriptions";
+  }
+  function dateRangeCmd(): string {
+    return viewMode() === "screen" ? "get_screen_slots_by_date_range" : "get_slots_by_date_range";
+  }
+  function availableDatesCmd(): string {
+    return viewMode() === "screen" ? "get_screen_available_dates" : "get_available_dates";
+  }
+
   async function loadTimeline(): Promise<void> {
     if (filterActive()) return;
-    if (searchQuery().trim()) return; // Don't override search results
-    await fetchIntoSlots(() => tryInvoke<HourSlot[]>("get_timeline", { limit: 50, offset: 0 }));
+    if (searchQuery().trim()) return;
+    await fetchIntoSlots(() => tryInvoke<HourSlot[]>(timelineCmd(), { limit: 50, offset: 0 }));
   }
 
   async function refreshActiveFilter(): Promise<void> {
     const range = filterRange();
     if (!range) return;
-    await fetchIntoSlots(() => tryInvoke<HourSlot[]>("get_slots_by_date_range", range));
+    await fetchIntoSlots(() => tryInvoke<HourSlot[]>(dateRangeCmd(), range));
   }
 
   async function searchSlots(query: string): Promise<void> {
@@ -73,8 +78,8 @@ export default function App(): JSX.Element {
     const trimmed = query.trim();
     await fetchIntoSlots(() =>
       trimmed
-        ? tryInvoke<HourSlot[]>("search_transcriptions", { query: trimmed })
-        : tryInvoke<HourSlot[]>("get_timeline", { limit: 50, offset: 0 }),
+        ? tryInvoke<HourSlot[]>(searchCmd(), { query: trimmed })
+        : tryInvoke<HourSlot[]>(timelineCmd(), { limit: 50, offset: 0 }),
     );
   }
 
@@ -120,6 +125,14 @@ export default function App(): JSX.Element {
     setFilterActive(false);
     setFilterRange(null);
     void loadTimeline();
+  }
+
+  function handleModeChange(mode: ViewMode): void {
+    fetchGen++;
+    setViewMode(mode);
+    setFilterActive(false);
+    setFilterRange(null);
+    setSearchQuery("");
   }
 
   // Status polling — pauses while the window is hidden to save CPU/IPC on
@@ -171,6 +184,7 @@ export default function App(): JSX.Element {
   // that fall inside the active range become visible.
   createEffect(() => {
     const unlisten = listen(TRANSCRIPTION_UPDATED, () => {
+      if (viewMode() !== "transcription") return;
       if (filterActive()) void refreshActiveFilter();
       else void loadTimeline();
       setLocalElapsed(0);
@@ -179,9 +193,23 @@ export default function App(): JSX.Element {
     onCleanup(() => { void unlisten.then((fn) => fn()); });
   });
 
+  createEffect(() => {
+    const unlisten = listen(SCREEN_CONTEXT_UPDATED, () => {
+      if (viewMode() !== "screen") return;
+      if (filterActive()) void refreshActiveFilter();
+      else void loadTimeline();
+      void loadStatus();
+    });
+    onCleanup(() => { void unlisten.then((fn) => fn()); });
+  });
+
+  // Reload timeline when viewMode changes
+  createEffect(() => {
+    viewMode(); // track
+    void loadTimeline();
+  });
+
   // Search debounce — single source of truth for what runs on input.
-  // Empty input re-fetches the timeline via the same path (no parallel
-  // "clear shortcut" that could race the debounce).
   createEffect(() => {
     const q = searchQuery();
     const debounce = setTimeout(() => { void searchSlots(q); }, SEARCH_DEBOUNCE_MS);
@@ -201,6 +229,7 @@ export default function App(): JSX.Element {
   return (
     <div class="app-container">
       <DragHandle />
+      <ModeToggle mode={viewMode()} onModeChange={handleModeChange} />
       <SearchBar
         query={searchQuery()}
         onInput={setSearchQuery}
@@ -218,6 +247,8 @@ export default function App(): JSX.Element {
         onClose={() => setFilterVisible(false)}
         onApply={handleFilterApply}
         onCopyAll={handleCopyAll}
+        availableDatesCmd={availableDatesCmd()}
+        dateRangeCmd={dateRangeCmd()}
       />
       <Timeline
         slots={slots()}

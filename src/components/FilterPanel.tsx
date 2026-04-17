@@ -13,6 +13,8 @@ interface FilterPanelProps {
   onClose: () => void;
   onApply: (slots: HourSlot[], range: FilterRange) => void;
   onCopyAll: (text: string) => void;
+  availableDatesCmd?: string;
+  dateRangeCmd?: string;
 }
 
 export default function FilterPanel(props: FilterPanelProps): JSX.Element {
@@ -33,7 +35,7 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
   createEffect(() => {
     if (!props.visible) return;
     void (async () => {
-      const d = await tryInvoke<string[]>("get_available_dates");
+      const d = await tryInvoke<string[]>(props.availableDatesCmd ?? "get_available_dates");
       if (!d) return;
       setDates(d);
       if (d.length > 0 && !selectedDate()) setSelectedDate(d[0]);
@@ -57,7 +59,7 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
 
     const myGen = ++panelFetchGen;
     void (async () => {
-      const slots = await tryInvoke<HourSlot[]>("get_slots_by_date_range", range);
+      const slots = await tryInvoke<HourSlot[]>(props.dateRangeCmd ?? "get_slots_by_date_range", range);
       if (myGen !== panelFetchGen) return;
       if (!slots) return;
       setFilteredSlots(slots);

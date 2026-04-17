@@ -43,6 +43,8 @@ export interface AppStatus {
   // samples are being dropped until rotation recovers. UI warns in the
   // empty-state / status bar.
   audio_disk_error: boolean;
+  is_screen_capture_enabled: boolean;
+  is_analyzing_screen: boolean;
 }
 
 export interface AudioLevelEvent {
