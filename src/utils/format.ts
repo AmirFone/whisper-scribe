@@ -68,3 +68,17 @@ export function formatTime(iso: string): string {
     return "";
   }
 }
+
+/**
+ * "9:05 PM" for an epoch millisecond timestamp.
+ */
+export function formatSegmentTime(epochMs: number): string {
+  try {
+    return new Date(epochMs).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
