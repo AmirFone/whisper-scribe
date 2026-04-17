@@ -1,13 +1,13 @@
 import { createSignal, createEffect, createMemo, onCleanup, type JSX } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import DragHandle from "./components/DragHandle";
-import ModeToggle, { type ViewMode } from "./components/ModeToggle";
 import SearchBar from "./components/SearchBar";
 import FilterPanel, { type FilterRange } from "./components/FilterPanel";
 import Timeline from "./components/Timeline";
 import StatusBar from "./components/StatusBar";
-import type { HourSlot, AppStatus } from "./types";
-import { TRANSCRIPTION_UPDATED, SCREEN_CONTEXT_UPDATED } from "./events";
+import ExpandedCardModal from "./components/ExpandedCardModal";
+import type { UnifiedHourSlot, AppStatus } from "./types";
+import { TIMELINE_UPDATED } from "./events";
 import { tryInvoke } from "./utils/invoke";
 
 const STATUS_POLL_MS = 1000;
@@ -28,19 +28,19 @@ const INITIAL_STATUS: AppStatus = {
 };
 
 export default function App(): JSX.Element {
-  const [slots, setSlots] = createSignal<HourSlot[]>([]);
+  const [slots, setSlots] = createSignal<UnifiedHourSlot[]>([]);
   const [status, setStatus] = createSignal<AppStatus>(INITIAL_STATUS);
   const [searchQuery, setSearchQuery] = createSignal("");
   const [localElapsed, setLocalElapsed] = createSignal(0);
   const [filterVisible, setFilterVisible] = createSignal(false);
   const [filterActive, setFilterActive] = createSignal(false);
   const [filterRange, setFilterRange] = createSignal<FilterRange | null>(null);
-  const [viewMode, setViewMode] = createSignal<ViewMode>("transcription");
+  const [expandedSlot, setExpandedSlot] = createSignal<UnifiedHourSlot | null>(null);
 
   let fetchGen = 0;
 
   async function fetchIntoSlots(
-    fetchFn: () => Promise<HourSlot[] | null>,
+    fetchFn: () => Promise<UnifiedHourSlot[] | null>,
   ): Promise<void> {
     const myGen = ++fetchGen;
     const results = await fetchFn();
@@ -48,29 +48,16 @@ export default function App(): JSX.Element {
     if (results) setSlots(results);
   }
 
-  function timelineCmd(): string {
-    return viewMode() === "screen" ? "get_screen_timeline" : "get_timeline";
-  }
-  function searchCmd(): string {
-    return viewMode() === "screen" ? "search_screen_context" : "search_transcriptions";
-  }
-  function dateRangeCmd(): string {
-    return viewMode() === "screen" ? "get_screen_slots_by_date_range" : "get_slots_by_date_range";
-  }
-  function availableDatesCmd(): string {
-    return viewMode() === "screen" ? "get_screen_available_dates" : "get_available_dates";
-  }
-
   async function loadTimeline(): Promise<void> {
     if (filterActive()) return;
     if (searchQuery().trim()) return;
-    await fetchIntoSlots(() => tryInvoke<HourSlot[]>(timelineCmd(), { limit: 50, offset: 0 }));
+    await fetchIntoSlots(() => tryInvoke<UnifiedHourSlot[]>("get_timeline", { limit: 50, offset: 0 }));
   }
 
   async function refreshActiveFilter(): Promise<void> {
     const range = filterRange();
     if (!range) return;
-    await fetchIntoSlots(() => tryInvoke<HourSlot[]>(dateRangeCmd(), range));
+    await fetchIntoSlots(() => tryInvoke<UnifiedHourSlot[]>("get_slots_by_date_range", range));
   }
 
   async function searchSlots(query: string): Promise<void> {
@@ -78,8 +65,8 @@ export default function App(): JSX.Element {
     const trimmed = query.trim();
     await fetchIntoSlots(() =>
       trimmed
-        ? tryInvoke<HourSlot[]>(searchCmd(), { query: trimmed })
-        : tryInvoke<HourSlot[]>(timelineCmd(), { limit: 50, offset: 0 }),
+        ? tryInvoke<UnifiedHourSlot[]>("search_transcriptions", { query: trimmed })
+        : tryInvoke<UnifiedHourSlot[]>("get_timeline", { limit: 50, offset: 0 }),
     );
   }
 
@@ -103,7 +90,7 @@ export default function App(): JSX.Element {
     }
   }
 
-  function handleFilterApply(filtered: HourSlot[], range: FilterRange): void {
+  function handleFilterApply(filtered: UnifiedHourSlot[], range: FilterRange): void {
     fetchGen++;
     setSlots(filtered);
     setFilterRange(range);
@@ -127,17 +114,7 @@ export default function App(): JSX.Element {
     void loadTimeline();
   }
 
-  function handleModeChange(mode: ViewMode): void {
-    fetchGen++;
-    setViewMode(mode);
-    setFilterActive(false);
-    setFilterRange(null);
-    setSearchQuery("");
-  }
-
-  // Status polling — pauses while the window is hidden to save CPU/IPC on
-  // a background app. `document.hidden` flips on Cmd+H / minimize; a single
-  // `visibilitychange` listener coordinates both intervals.
+  // Status polling
   createEffect(() => {
     void loadTimeline();
     void loadStatus();
@@ -175,16 +152,9 @@ export default function App(): JSX.Element {
     });
   });
 
-  // Transcription-updated push event is the source of truth for "new
-  // segment appended"; polling was previously layered on top and fired a
-  // redundant round-trip every 5 s. Removed — the push event covers it.
-  //
-  // If a filter is active, `loadTimeline` early-returns so as not to clobber
-  // the filtered view — we re-run the filter query instead so new segments
-  // that fall inside the active range become visible.
+  // Unified timeline event — fired by both transcription and screen pipelines
   createEffect(() => {
-    const unlisten = listen(TRANSCRIPTION_UPDATED, () => {
-      if (viewMode() !== "transcription") return;
+    const unlisten = listen(TIMELINE_UPDATED, () => {
       if (filterActive()) void refreshActiveFilter();
       else void loadTimeline();
       setLocalElapsed(0);
@@ -193,23 +163,7 @@ export default function App(): JSX.Element {
     onCleanup(() => { void unlisten.then((fn) => fn()); });
   });
 
-  createEffect(() => {
-    const unlisten = listen(SCREEN_CONTEXT_UPDATED, () => {
-      if (viewMode() !== "screen") return;
-      if (filterActive()) void refreshActiveFilter();
-      else void loadTimeline();
-      void loadStatus();
-    });
-    onCleanup(() => { void unlisten.then((fn) => fn()); });
-  });
-
-  // Reload timeline when viewMode changes
-  createEffect(() => {
-    viewMode(); // track
-    void loadTimeline();
-  });
-
-  // Search debounce — single source of truth for what runs on input.
+  // Search debounce
   createEffect(() => {
     const q = searchQuery();
     const debounce = setTimeout(() => { void searchSlots(q); }, SEARCH_DEBOUNCE_MS);
@@ -222,14 +176,13 @@ export default function App(): JSX.Element {
   const progress = createMemo(() => {
     const max = status().segment_duration_secs;
     if (max <= 0) return 0;
-    // Round to 3 decimals so tiny FP jitter doesn't churn the SVG attribute.
     return Math.round(Math.min(1, localElapsed() / max) * 1000) / 1000;
   });
 
   return (
-    <div class="app-container">
+    <>
+    <div class={`app-container ${expandedSlot() ? "app-hidden" : ""}`}>
       <DragHandle />
-      <ModeToggle mode={viewMode()} onModeChange={handleModeChange} />
       <SearchBar
         query={searchQuery()}
         onInput={setSearchQuery}
@@ -247,12 +200,11 @@ export default function App(): JSX.Element {
         onClose={() => setFilterVisible(false)}
         onApply={handleFilterApply}
         onCopyAll={handleCopyAll}
-        availableDatesCmd={availableDatesCmd()}
-        dateRangeCmd={dateRangeCmd()}
       />
       <Timeline
         slots={slots()}
         onCopy={copyText}
+        onExpand={setExpandedSlot}
         isRecording={status().is_recording}
         isPaused={status().is_paused}
         secondsRemaining={secondsRemaining()}
@@ -263,5 +215,12 @@ export default function App(): JSX.Element {
       />
       <StatusBar status={status()} onTogglePause={togglePause} secondsRemaining={secondsRemaining()} />
     </div>
+    <ExpandedCardModal
+      slot={expandedSlot()}
+      onClose={() => setExpandedSlot(null)}
+      onCopy={copyText}
+      searchQuery={searchQuery()}
+    />
+    </>
   );
 }

@@ -1,14 +1,15 @@
 import { For, Show, onMount, type JSX } from "solid-js";
-import HourSlotCard from "./HourSlotCard";
+import UnifiedHourSlotCard from "./UnifiedHourSlotCard";
 import AudioLevelBars from "./AudioLevelBars";
-import type { HourSlot } from "../types";
+import type { UnifiedHourSlot } from "../types";
 import { formatCountdown } from "../utils/format";
 
 let savedTimelineScroll = 0;
 
 interface TimelineProps {
-  slots: HourSlot[];
+  slots: UnifiedHourSlot[];
   onCopy: (text: string) => void;
+  onExpand: (slot: UnifiedHourSlot) => void;
   isRecording: boolean;
   isPaused: boolean;
   secondsRemaining: number;
@@ -41,7 +42,14 @@ export default function Timeline(props: TimelineProps): JSX.Element {
 
       <Show when={props.slots.length > 0}>
         <For each={props.slots}>
-          {(slot) => <HourSlotCard slot={slot} onCopy={props.onCopy} searchQuery={props.searchQuery} />}
+          {(slot) => (
+            <UnifiedHourSlotCard
+              slot={slot}
+              onCopy={props.onCopy}
+              onExpand={props.onExpand}
+              searchQuery={props.searchQuery}
+            />
+          )}
         </For>
       </Show>
 

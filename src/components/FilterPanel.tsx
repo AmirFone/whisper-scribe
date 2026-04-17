@@ -1,7 +1,7 @@
 import { createSignal, createEffect, Show, For, type JSX } from "solid-js";
-import type { HourSlot } from "../types";
+import type { UnifiedHourSlot } from "../types";
 import { tryInvoke } from "../utils/invoke";
-import { formatRelativeDateWithWeekday } from "../utils/format";
+import { formatRelativeDateWithWeekday, formatSegmentTime } from "../utils/format";
 
 export interface FilterRange extends Record<string, unknown> {
   fromKey: string;
@@ -11,10 +11,8 @@ export interface FilterRange extends Record<string, unknown> {
 interface FilterPanelProps {
   visible: boolean;
   onClose: () => void;
-  onApply: (slots: HourSlot[], range: FilterRange) => void;
+  onApply: (slots: UnifiedHourSlot[], range: FilterRange) => void;
   onCopyAll: (text: string) => void;
-  availableDatesCmd?: string;
-  dateRangeCmd?: string;
 }
 
 export default function FilterPanel(props: FilterPanelProps): JSX.Element {
@@ -22,7 +20,7 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
   const [selectedDate, setSelectedDate] = createSignal<string>("");
   const [fromHour, setFromHour] = createSignal(0);
   const [toHour, setToHour] = createSignal(23);
-  const [filteredSlots, setFilteredSlots] = createSignal<HourSlot[]>([]);
+  const [filteredSlots, setFilteredSlots] = createSignal<UnifiedHourSlot[]>([]);
   const [totalWords, setTotalWords] = createSignal(0);
 
   // Generation counter for the panel's own IPC calls. Prevents a slow date-
@@ -35,7 +33,7 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
   createEffect(() => {
     if (!props.visible) return;
     void (async () => {
-      const d = await tryInvoke<string[]>(props.availableDatesCmd ?? "get_available_dates");
+      const d = await tryInvoke<string[]>("get_available_dates");
       if (!d) return;
       setDates(d);
       if (d.length > 0 && !selectedDate()) setSelectedDate(d[0]);
@@ -59,11 +57,14 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
 
     const myGen = ++panelFetchGen;
     void (async () => {
-      const slots = await tryInvoke<HourSlot[]>(props.dateRangeCmd ?? "get_slots_by_date_range", range);
+      const slots = await tryInvoke<UnifiedHourSlot[]>("get_slots_by_date_range", range);
       if (myGen !== panelFetchGen) return;
       if (!slots) return;
       setFilteredSlots(slots);
-      const words = slots.reduce((sum, s) => sum + s.text.split(/\s+/).length, 0);
+      const words = slots.reduce(
+        (sum, s) => sum + s.segments.reduce((ss, seg) => ss + seg.text.split(/\s+/).length, 0),
+        0,
+      );
       setTotalWords(words);
     })();
   });
@@ -79,7 +80,14 @@ export default function FilterPanel(props: FilterPanelProps): JSX.Element {
       .map((s) => {
         const hour = parseInt(s.hour_key.split("T")[1], 10);
         const label = `${hour}:00 - ${hour + 1}:00`;
-        return `[${label}]\n${s.text}`;
+        const segTexts = s.segments
+          .map((seg) => {
+            const time = formatSegmentTime(seg.timestamp);
+            const tag = seg.segment_type === "screen" ? "Screen Context" : "Transcription";
+            return `[${tag} ${time}] ${seg.text}`;
+          })
+          .join("\n\n");
+        return `[${label}]\n${segTexts}`;
       })
       .join("\n\n");
     props.onCopyAll(allText);
