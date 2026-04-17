@@ -55,10 +55,10 @@ pub fn start(app: AppHandle, state: Arc<AppState>, screenshots_dir: PathBuf) {
                     }
                     Ok(text) => {
                         let now = chrono::Utc::now();
-                        if let Err(e) = state.storage.append_to_screen_slot(&text, &now) {
+                        if let Err(e) = state.storage.insert_screen_context(&text, &now) {
                             log::error!("Failed to store screen context: {e}");
                         }
-                        app.emit(events::SCREEN_CONTEXT_UPDATED, &()).ok();
+                        app.emit(events::TIMELINE_UPDATED, &()).ok();
                     }
                     Err(e) => log::error!("Screen analysis failed: {e}"),
                 }

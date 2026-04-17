@@ -86,10 +86,10 @@ fn transcribe_and_store(app: &AppHandle, state: &Arc<AppState>, path: &Path) {
             log::info!("Skipping empty/silent segment");
         }
         Some(Ok(r)) => {
-            if let Err(e) = state.storage.append_to_hour_slot(&r.text, &r.start_time, &r.device) {
+            if let Err(e) = state.storage.insert_transcription(&r.text, &r.start_time, &r.device) {
                 log::error!("Failed to store transcription: {e}");
             }
-            app.emit(events::TRANSCRIPTION_UPDATED, &()).ok();
+            app.emit(events::TIMELINE_UPDATED, &()).ok();
         }
         Some(Err(e)) => log::error!("Transcription failed: {e}"),
         None => log::warn!("Transcriber unavailable — segment dropped"),

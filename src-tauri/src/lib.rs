@@ -105,10 +105,6 @@ pub fn run() {
             commands::subscribe_audio_level,
             commands::get_slots_by_date_range,
             commands::get_available_dates,
-            commands::get_screen_timeline,
-            commands::search_screen_context,
-            commands::get_screen_slots_by_date_range,
-            commands::get_screen_available_dates,
             commands::toggle_screen_capture,
         ])
         .run(tauri::generate_context!())
