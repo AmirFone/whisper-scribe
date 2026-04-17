@@ -1,14 +1,3 @@
-//! Integration tests against the real `whisper_scribe_lib::storage::Storage`
-//! public API. The previous version of this file constructed its own SQLite
-//! `Connection` and ran `CREATE TABLE transcriptions` — the legacy schema that
-//! nothing in the actual product uses anymore. A regression to
-//! `Storage::append_to_hour_slot` or `Storage::get_hour_slots` would have
-//! passed every test here. This file now exercises the real API; the
-//! legacy-schema files live behind `#[cfg(feature = "legacy_schema_tests")]`.
-//!
-//! If you need a storage regression guard, put it here, not in the
-//! `*_exhaustive.rs` files.
-
 use chrono::{TimeZone, Utc};
 use std::sync::Arc;
 use std::thread;
@@ -22,134 +11,122 @@ fn fresh_storage() -> (Storage, TempDir) {
 }
 
 #[test]
-fn test_append_then_get_timeline_via_real_api() {
-    // #given a fresh storage and two segments in different hours
+fn test_insert_then_get_unified_timeline() {
     let (storage, _dir) = fresh_storage();
     let t1 = Utc.with_ymd_and_hms(2024, 3, 10, 14, 5, 0).unwrap();
     let t2 = Utc.with_ymd_and_hms(2024, 3, 10, 15, 5, 0).unwrap();
-    storage.append_to_hour_slot("morning note", &t1, "Mic").unwrap();
-    storage.append_to_hour_slot("afternoon note", &t2, "Mic").unwrap();
+    storage.insert_transcription("morning note", &t1, "Mic").unwrap();
+    storage.insert_transcription("afternoon note", &t2, "Mic").unwrap();
 
-    // #when we read back through the public `get_hour_slots`
-    let slots = storage.get_hour_slots(100, 0).unwrap();
-
-    // #then two rows come back ordered by start_time DESC
+    let slots = storage.get_unified_timeline(100, 0).unwrap();
     assert_eq!(slots.len(), 2);
-    assert!(slots[0].text.contains("afternoon"));
-    assert!(slots[1].text.contains("morning"));
+    assert!(slots[0].segments[0].text.contains("afternoon"));
+    assert!(slots[1].segments[0].text.contains("morning"));
 }
 
 #[test]
-fn test_search_through_real_storage_api() {
-    // #given three seeded hour slots with distinct text
+fn test_search_across_types() {
     let (storage, _dir) = fresh_storage();
     let ts = Utc.with_ymd_and_hms(2024, 3, 10, 14, 0, 0).unwrap();
-    storage.append_to_hour_slot("quarterly budget review", &ts, "Mic").unwrap();
+    storage.insert_transcription("quarterly budget review", &ts, "Mic").unwrap();
     let ts2 = Utc.with_ymd_and_hms(2024, 3, 10, 15, 0, 0).unwrap();
-    storage.append_to_hour_slot("annual revenue forecast", &ts2, "Mic").unwrap();
+    storage.insert_screen_context("App: Sheets, editing budget spreadsheet", &ts2).unwrap();
     let ts3 = Utc.with_ymd_and_hms(2024, 3, 10, 16, 0, 0).unwrap();
-    storage.append_to_hour_slot("coffee chat with team", &ts3, "Mic").unwrap();
+    storage.insert_transcription("coffee chat with team", &ts3, "Mic").unwrap();
 
-    // #when we search through the public API
-    let hits = storage.search_hour_slots("budget").unwrap();
-
-    // #then FTS filters to the matching row
-    assert_eq!(hits.len(), 1);
-    assert!(hits[0].text.contains("budget"));
+    let hits = storage.search_segments("budget").unwrap();
+    assert_eq!(hits.len(), 2);
 }
 
 #[test]
-fn test_concurrent_append_from_two_threads_via_real_api() {
-    // #given a shared Storage
+fn test_concurrent_inserts() {
     let (storage, _dir) = fresh_storage();
     let storage = Arc::new(storage);
 
-    // #when two threads each append 50 segments into distinct hours
     let s1 = storage.clone();
     let t1 = thread::spawn(move || {
         for i in 0..50 {
-            let ts = Utc.with_ymd_and_hms(2024, 3, 10, (i % 24) as u32, 0, 0).unwrap();
-            s1.append_to_hour_slot(&format!("t1 seg {i}"), &ts, "Mic").unwrap();
+            let ts = Utc.with_ymd_and_hms(2024, 3, 10, (i % 24) as u32, i as u32, 0).unwrap();
+            s1.insert_transcription(&format!("t1 seg {i}"), &ts, "Mic").unwrap();
         }
     });
     let s2 = storage.clone();
     let t2 = thread::spawn(move || {
         for i in 0..50 {
-            let ts = Utc.with_ymd_and_hms(2024, 3, 11, (i % 24) as u32, 0, 0).unwrap();
-            s2.append_to_hour_slot(&format!("t2 seg {i}"), &ts, "Mic").unwrap();
+            let ts = Utc.with_ymd_and_hms(2024, 3, 11, (i % 24) as u32, i as u32, 0).unwrap();
+            s2.insert_screen_context(&format!("t2 cap {i}"), &ts).unwrap();
         }
     });
     t1.join().unwrap();
     t2.join().unwrap();
 
-    // #then count matches total writes (100 / 24 + 100/24 buckets across dates)
-    //       — no writes lost to race conditions under the `Mutex<Connection>`
-    let count = storage.count().unwrap();
-    assert!(count > 0, "expected at least one hour_slot row after 100 appends");
-    // both thread's segment texts appear somewhere in the stored rows
-    let all = storage.get_hour_slots(200, 0).unwrap();
-    let all_text: String = all.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join(" ");
-    assert!(all_text.contains("t1 seg"));
-    assert!(all_text.contains("t2 seg"));
+    let count = storage.segment_count().unwrap();
+    assert_eq!(count, 100);
 }
 
 #[test]
-fn test_date_range_query_via_real_api() {
-    // #given three hour slots across two UTC dates
+fn test_date_range_unified() {
     let (storage, _dir) = fresh_storage();
-    let t_mar10_14 = Utc.with_ymd_and_hms(2024, 3, 10, 14, 0, 0).unwrap();
-    let t_mar10_18 = Utc.with_ymd_and_hms(2024, 3, 10, 18, 0, 0).unwrap();
-    let t_mar11_09 = Utc.with_ymd_and_hms(2024, 3, 11, 9, 0, 0).unwrap();
-    storage.append_to_hour_slot("a", &t_mar10_14, "Mic").unwrap();
-    storage.append_to_hour_slot("b", &t_mar10_18, "Mic").unwrap();
-    storage.append_to_hour_slot("c", &t_mar11_09, "Mic").unwrap();
+    let t1 = Utc.with_ymd_and_hms(2024, 3, 10, 14, 0, 0).unwrap();
+    let t2 = Utc.with_ymd_and_hms(2024, 3, 10, 18, 0, 0).unwrap();
+    let t3 = Utc.with_ymd_and_hms(2024, 3, 11, 9, 0, 0).unwrap();
+    storage.insert_transcription("a", &t1, "Mic").unwrap();
+    storage.insert_screen_context("b", &t2).unwrap();
+    storage.insert_transcription("c", &t3, "Mic").unwrap();
 
-    // #when we restrict to a range derived from `hour_key_of` — same bucketing
-    //       path production uses. Avoids hard-coding the format and making
-    //       the test dependent on the runner's timezone.
-    let from_key = Storage::hour_key_of(&Utc.with_ymd_and_hms(2024, 3, 10, 0, 0, 0).unwrap());
-    let to_key = Storage::hour_key_of(&Utc.with_ymd_and_hms(2024, 3, 10, 23, 0, 0).unwrap());
-    let slots = storage.get_slots_by_date_range(&from_key, &to_key).unwrap();
+    let from = Storage::hour_key_of(&Utc.with_ymd_and_hms(2024, 3, 10, 0, 0, 0).unwrap());
+    let to = Storage::hour_key_of(&Utc.with_ymd_and_hms(2024, 3, 10, 23, 0, 0).unwrap());
+    let slots = storage.get_segments_by_date_range(&from, &to).unwrap();
 
-    // #then only the March 10 entries are returned (and there are exactly 2)
-    assert!(slots.iter().all(|s| s.hour_key.starts_with("2024-03-10")));
     assert_eq!(slots.len(), 2);
+    assert!(slots.iter().all(|s| s.hour_key.starts_with("2024-03-10")));
 }
 
 #[test]
-fn test_orphan_dedup_catches_later_segments_in_existing_hour() {
-    // #given an hour that has already absorbed two segments
+fn test_orphan_dedup_on_segments() {
     let (storage, _dir) = fresh_storage();
-    let t_first = Utc.with_ymd_and_hms(2024, 3, 10, 14, 5, 0).unwrap();
-    let t_second = Utc.with_ymd_and_hms(2024, 3, 10, 14, 7, 0).unwrap();
-    storage.append_to_hour_slot("first", &t_first, "Mic").unwrap();
-    storage.append_to_hour_slot("second", &t_second, "Mic").unwrap();
+    let ts = Utc.with_ymd_and_hms(2024, 3, 10, 14, 5, 0).unwrap();
+    storage.insert_transcription("first", &ts, "Mic").unwrap();
 
-    // #when we dedup the non-first orphan
-    // #then is_segment_processed recognises it as already-appended — the
-    //       prior `start_time`-only dedup missed this case and silently
-    //       re-transcribed it on every restart
-    assert!(storage.is_segment_processed(&t_second));
+    assert!(storage.is_segment_processed(&ts));
 
-    // #and a would-be-later segment in the same hour is NOT flagged
-    let t_future = Utc.with_ymd_and_hms(2024, 3, 10, 14, 9, 0).unwrap();
-    assert!(!storage.is_segment_processed(&t_future));
+    let ts2 = Utc.with_ymd_and_hms(2024, 3, 10, 14, 7, 0).unwrap();
+    assert!(!storage.is_segment_processed(&ts2));
 }
 
 #[test]
-fn test_get_hour_slots_respects_limit() {
-    // #given 20 distinct hour-slots across 20 different hours of one day
+fn test_unified_timeline_respects_limit() {
     let (storage, _dir) = fresh_storage();
     for h in 0..20 {
         let ts = Utc.with_ymd_and_hms(2024, 3, 12, h, 0, 0).unwrap();
-        storage.append_to_hour_slot(&format!("hour {h}"), &ts, "Mic").unwrap();
+        storage.insert_transcription(&format!("hour {h}"), &ts, "Mic").unwrap();
     }
 
-    // #when we request a smaller page
-    let page = storage.get_hour_slots(5, 0).unwrap();
-    let full = storage.get_hour_slots(50, 0).unwrap();
-
-    // #then the page obeys the limit and the full request returns everything
+    let page = storage.get_unified_timeline(5, 0).unwrap();
+    let full = storage.get_unified_timeline(50, 0).unwrap();
     assert_eq!(page.len(), 5);
     assert!(full.len() >= 20);
+}
+
+#[test]
+fn test_interleaved_segments_within_hour() {
+    let (storage, _dir) = fresh_storage();
+    let t1 = Utc.with_ymd_and_hms(2024, 6, 15, 10, 5, 0).unwrap();
+    let t2 = Utc.with_ymd_and_hms(2024, 6, 15, 10, 10, 0).unwrap();
+    let t3 = Utc.with_ymd_and_hms(2024, 6, 15, 10, 12, 0).unwrap();
+    let t4 = Utc.with_ymd_and_hms(2024, 6, 15, 10, 15, 0).unwrap();
+
+    storage.insert_transcription("spoke about project", &t1, "Mic").unwrap();
+    storage.insert_screen_context("App: VS Code, editing main.rs", &t2).unwrap();
+    storage.insert_transcription("discussed next steps", &t3, "Mic").unwrap();
+    storage.insert_screen_context("App: Chrome, viewing GitHub PR", &t4).unwrap();
+
+    let slots = storage.get_unified_timeline(10, 0).unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].segments.len(), 4);
+    assert_eq!(slots[0].segments[0].segment_type, "transcription");
+    assert_eq!(slots[0].segments[1].segment_type, "screen");
+    assert_eq!(slots[0].segments[2].segment_type, "transcription");
+    assert_eq!(slots[0].segments[3].segment_type, "screen");
+    assert!(slots[0].segments[0].timestamp < slots[0].segments[1].timestamp);
 }
