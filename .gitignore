@@ -25,6 +25,7 @@ logs/
 
 # Claude Code
 .claude/data/
+**/.claude/data/
 
 # Generated
 src-tauri/gen/
