@@ -7,26 +7,32 @@ A fast, lightweight macOS menu bar app that continuously records audio and trans
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/app-main.png" width="400" alt="Whisper Scribe" />
-  <img src="docs/screenshots/screen-context.png" width="400" alt="Screen Context" />
+  <img src="docs/screenshots/app-main.png" width="340" alt="Unified Timeline" />
+  <img src="docs/screenshots/search-highlight.png" width="340" alt="Search Highlights" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/search-tag.png" width="340" alt="Search Tags" />
+  <img src="docs/screenshots/filter-modal.png" width="340" alt="Filter by Date and Time" />
 </p>
 
 ## What It Does
 
-Whisper Scribe sits in your menu bar and records audio in 2-minute segments, transcribing each one with MLX-accelerated Whisper Large v3. Transcriptions are grouped into hourly slots — one card per clock hour — and appended as new segments complete. All text is stored locally in SQLite with full-text search.
+Whisper Scribe sits in your menu bar and records audio in 2-minute segments, transcribing each one with MLX-accelerated Whisper Large v3. Every 5 minutes, it captures screenshots of all connected displays and analyzes them with Qwen3.5-9B (a local vision model on Apple Silicon GPU).
 
-Every 5 minutes, it also captures screenshots of all connected displays and analyzes them with Qwen3.5-9B (a local vision model running on Apple Silicon GPU). The Screen Context tab shows a log of what you were doing on screen — which apps were open, what tabs you had, what text was visible — searchable and filterable just like transcriptions.
+Both transcriptions and screen context appear in a unified chronological timeline — one card per clock hour, segments interleaved by timestamp. Audio segments and screen context segments are visually distinguished with colored markers. All text is stored locally in SQLite with full-text search, date filtering, and time range selection.
 
 ## Key Features
 
 - **Always-on recording** with smart pause on screen lock/sleep
 - **MLX GPU transcription** via Whisper Large v3 (~2x faster than CPU on M-series chips)
-- **Hourly time slots** — clean UI, one card per hour, text grows as you talk
-- **Full-text search** with highlighted results
+- **Unified timeline** — audio and screen context interleaved chronologically per hour
+- **Full-text search** with highlighted results and tag-based filtering
 - **Date/time filtering** — filter by day and hour range, copy all matching text
+- **Expanded detail view** — double-click any hour card for a resizable modal with full content
 - **Hallucination filtering** — Silero VAD pre-filter + post-processing regex strips repeated phrases and silent-segment artifacts
 - **Smart device selection** — auto-prefers built-in mic over Bluetooth to avoid AirPods audio degradation
-- **macOS native** — translucent vibrancy, Cmd+, toggle, draggable window
+- **macOS native** — translucent vibrancy with liquid glass aesthetic, draggable window
 - **Screen context logging** — periodic screenshot capture + on-device OCR via Qwen3.5-9B vision model
 - **Multi-monitor support** — captures all connected displays via CoreGraphics
 - **Privacy-first screen capture** — no screencapture CLI, direct CoreGraphics FFI, permission checked before every cycle
