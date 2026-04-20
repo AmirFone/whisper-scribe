@@ -1,4 +1,4 @@
-import { For, Show, onMount, type JSX } from "solid-js";
+import { For, Show, onMount, createEffect, type JSX } from "solid-js";
 import UnifiedHourSlotCard from "./UnifiedHourSlotCard";
 import AudioLevelBars from "./AudioLevelBars";
 import type { UnifiedHourSlot } from "../types";
@@ -27,12 +27,31 @@ export default function Timeline(props: TimelineProps): JSX.Element {
     if (timelineRef) timelineRef.scrollTop = savedTimelineScroll;
   });
 
+  createEffect(() => {
+    const q = props.searchQuery;
+    if (!q?.trim() || !timelineRef) return;
+    requestAnimationFrame(() => {
+      const firstHighlight = timelineRef!.querySelector<HTMLElement>(".search-highlight");
+      if (!firstHighlight) return;
+      const card = firstHighlight.closest<HTMLElement>(".card");
+      if (card) {
+        const cardTop = card.offsetTop - timelineRef!.offsetTop;
+        timelineRef!.scrollTo({ top: Math.max(0, cardTop - 8), behavior: "smooth" });
+      }
+    });
+  });
+
   function handleTimelineScroll() {
     if (timelineRef) savedTimelineScroll = timelineRef.scrollTop;
   }
 
   return (
-    <div class="timeline" ref={timelineRef} onScroll={handleTimelineScroll}>
+    <div
+      class="timeline"
+      ref={timelineRef}
+      onScroll={handleTimelineScroll}
+      data-search-active={props.searchQuery?.trim() ? "true" : undefined}
+    >
       <Show when={props.isTranscribing}>
         <div class="transcribing-banner">
           <div class="transcribing-spinner" />
@@ -74,7 +93,7 @@ export default function Timeline(props: TimelineProps): JSX.Element {
               <span>{props.deviceName}</span>
             </div>
             <div class="countdown-container">
-              <div class="countdown-ring">
+              <div class={`countdown-ring${props.progress >= 0.95 ? " ring-completing" : ""}${props.progress >= 1 ? " ring-complete" : ""}`}>
                 <svg viewBox="0 0 72 72">
                   <circle class="countdown-ring-bg" cx="36" cy="36" r="30" />
                   <circle class="countdown-ring-progress" cx="36" cy="36" r="30"

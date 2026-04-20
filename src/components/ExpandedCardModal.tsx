@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, onCleanup, Show, For, type JSX } from "solid-js";
+import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, For, type JSX } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type { UnifiedHourSlot, Segment } from "../types";
@@ -91,7 +91,7 @@ export default function ExpandedCardModal(props: ExpandedCardModalProps): JSX.El
                   onClick={handleCopy}
                   class={`card-copy-btn ${copied() ? "copied" : ""}`}
                 >
-                  {copied() ? "Copied" : "Copy All"}
+                  {copied() ? "\u2713 Copied" : "Copy All"}
                 </button>
                 <button class="filter-close" onClick={handleClose}>
                   x
@@ -102,7 +102,7 @@ export default function ExpandedCardModal(props: ExpandedCardModalProps): JSX.El
               <For each={slot().segments}>
                 {(seg: Segment) => {
                   const isScreen = () => seg.segment_type === "screen";
-                  const parts = () => highlightText(seg.text, props.searchQuery || "");
+                  const parts = createMemo(() => highlightText(seg.text, props.searchQuery || ""));
                   return (
                     <div class={`segment-item segment-expanded ${isScreen() ? "segment-type-screen" : "segment-type-transcription"}`}>
                       <div class="segment-header">

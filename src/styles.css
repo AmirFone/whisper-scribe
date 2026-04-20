@@ -21,6 +21,22 @@ body {
   background: transparent;
   border-radius: 18px;
   height: 100%;
+  transform-origin: top center;
+}
+body.hud-entering {
+  animation: hud-enter 220ms cubic-bezier(.2,.9,.3,1.15) both;
+}
+body.hud-dismissing {
+  animation: hud-dismiss 160ms ease-out both;
+  pointer-events: none;
+}
+@keyframes hud-enter {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes hud-dismiss {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(0.98); opacity: 0; }
 }
 
 /* ── Drag handle ── */
@@ -63,6 +79,29 @@ body {
   position: relative;
   display: flex;
   align-items: center;
+}
+/* Subtle progress indicator: a 1px cream line that sweeps across the bottom
+   of the search input while a query is in flight. Replaces the old "flash of
+   empty state" with a clearer signal that work is happening, without ever
+   stealing focus from the text itself. */
+.search-input-wrapper::after {
+  content: "";
+  position: absolute;
+  left: 8px; right: 8px; bottom: 1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(225,224,204,0.55), transparent);
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+  border-radius: 1px;
+}
+.search-input-wrapper[data-loading="true"]::after {
+  opacity: 1;
+  animation: search-loading-sweep 900ms linear infinite;
+}
+@keyframes search-loading-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
 }
 .search-icon {
   position: absolute;
@@ -189,8 +228,20 @@ body {
 .countdown-ring-progress {
   fill: none; stroke: rgba(225,224,204,0.80);
   stroke-width: 3; stroke-linecap: round;
-  transition: stroke-dashoffset 1s linear;
+  transition: stroke-dashoffset 1s linear, stroke 300ms ease, filter 300ms ease;
   filter: drop-shadow(0 0 5px rgba(225,224,204,0.25));
+}
+.ring-completing .countdown-ring-progress {
+  stroke: rgba(225,224,204,1);
+  filter: drop-shadow(0 0 10px rgba(225,224,204,0.6));
+}
+.ring-complete .countdown-ring-progress {
+  animation: ring-flash 400ms ease-out forwards;
+}
+@keyframes ring-flash {
+  0% { stroke: rgba(225,224,204,1); filter: drop-shadow(0 0 12px rgba(225,224,204,0.8)); }
+  30% { stroke: rgba(225,224,204,1); filter: drop-shadow(0 0 16px rgba(225,224,204,0.9)); }
+  100% { stroke: rgba(225,224,204,0.2); filter: drop-shadow(0 0 2px rgba(225,224,204,0.1)); }
 }
 .countdown-time {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -238,15 +289,53 @@ body {
   box-shadow:
     0 2px 10px rgba(0,0,0,0.55),
     inset 0 1px 0 rgba(225,224,204,0.06);
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
   cursor: default;
   position: relative;
   overflow: hidden;
+  animation: card-enter 300ms ease-out both;
+  /* Skip paint/layout for cards scrolled out of view. WebKit (Safari 18+)
+     supports this and it drops off-screen render cost to near-zero. The
+     intrinsic-size hint keeps the scrollbar stable when cards are revealed. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .card::before {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 40%;
   background: linear-gradient(180deg, rgba(225,224,204,0.035), transparent);
   pointer-events: none; border-radius: 14px 14px 0 0;
+}
+.card::after {
+  content: "";
+  position: absolute; top: 0; left: 0;
+  width: 60%; height: 1.5px;
+  background: linear-gradient(90deg, transparent, rgba(225,224,204,0.18), transparent);
+  transform: translateX(-100%);
+  animation: shimmer-sweep 500ms ease-out 200ms forwards;
+  pointer-events: none;
+}
+@keyframes shimmer-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(430%); }
+}
+
+/* Suppress enter animations while a search query is active. Reconcile keeps
+   cards' DOM nodes stable across searches, but if a card does need to mount
+   (first result of a query), we don't want the shimmer/fade replaying on every
+   keystroke. */
+.timeline[data-search-active="true"] .card {
+  animation: none;
+}
+.timeline[data-search-active="true"] .card::after {
+  animation: none;
+  display: none;
+}
+.timeline[data-search-active="true"] .search-highlight {
+  animation: none;
 }
 .card:hover {
   background: linear-gradient(180deg, #232323 0%, #141414 100%);
@@ -290,9 +379,17 @@ body {
 }
 .card-copy-btn.copied {
   opacity: 1;
-  background: linear-gradient(180deg, rgba(140,168,130,0.30) 0%, rgba(140,168,130,0.12) 100%);
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(225,224,204,0.20) 50%, transparent 100%),
+    linear-gradient(180deg, rgba(140,168,130,0.30) 0%, rgba(140,168,130,0.12) 100%);
+  background-size: 200% 100%, 100% 100%;
   color: rgba(190,215,180,0.95);
   border-color: rgba(140,168,130,0.40);
+  animation: copy-sweep 400ms ease-out;
+}
+@keyframes copy-sweep {
+  from { background-position: -100% 0, 0 0; }
+  to { background-position: 100% 0, 0 0; }
 }
 
 .card-text-scroll { max-height: 150px; overflow-y: auto; }
@@ -315,9 +412,16 @@ body {
   color: rgba(255,252,230,0.98);
   background: linear-gradient(180deg, rgba(196,148,74,0.40) 0%, rgba(196,148,74,0.22) 100%);
   padding: 1px 5px; border-radius: 5px; margin: 0 1px;
+  display: inline-block;
   box-shadow:
     inset 0 0.5px 0 rgba(245,220,170,0.35),
     inset 0 0 0 0.5px rgba(196,148,74,0.40);
+  animation: highlight-pulse 200ms ease-out;
+}
+@keyframes highlight-pulse {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }
 
 /* ── Segment Items ── */
@@ -363,6 +467,11 @@ body {
   justify-content: center;
   z-index: 100;
   backdrop-filter: blur(6px);
+  animation: fade-in 180ms ease-out;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .filter-panel {
   width: 320px;
@@ -371,6 +480,11 @@ body {
   border-radius: 16px;
   padding: 16px;
   box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  animation: panel-enter 220ms cubic-bezier(.2,.9,.3,1.15);
+}
+@keyframes panel-enter {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
 }
 .filter-header {
   display: flex;
@@ -473,31 +587,47 @@ body {
   box-shadow: inset 0 1px 0 rgba(225,224,204,0.05);
 }
 .status-left { display: flex; align-items: center; gap: 9px; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; }
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  position: relative;
+  transition: background-color 240ms ease, box-shadow 240ms ease;
+}
 .status-dot.recording {
-  background: radial-gradient(circle at 35% 35%, #d86f5c, #c45848);
+  background-color: #c45848;
   box-shadow: 0 0 8px rgba(196,88,72,0.55), 0 0 2px rgba(196,88,72,0.85);
-  animation: pulse-dot 2s ease-in-out infinite;
+}
+.status-dot.recording::after {
+  content: "";
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 1.5px solid rgba(196,88,72,0.8);
+  animation: ripple-ring 2s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes ripple-ring {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
 }
 .status-dot.paused {
-  background: radial-gradient(circle at 35% 35%, #d8a860, #c4944a);
+  background-color: #c4944a;
   box-shadow: 0 0 6px rgba(196,148,74,0.35);
 }
 .status-dot.disk-error {
-  background: radial-gradient(circle at 35% 35%, #d8a860, #c4944a);
+  background-color: #c4944a;
   box-shadow: 0 0 6px rgba(196,148,74,0.35);
-  animation: pulse-dot 2s ease-in-out infinite;
+}
+.status-dot.disk-error::after {
+  content: "";
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 1.5px solid rgba(196,148,74,0.8);
+  animation: ripple-ring 2s ease-out infinite;
+  pointer-events: none;
 }
 .status-disk-error {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; color: rgba(196,148,74,0.85); font-weight: 700;
 }
 .status-dot.idle {
-  background: radial-gradient(circle at 35% 35%, rgba(225,224,204,0.30), rgba(225,224,204,0.15));
-}
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
+  background-color: rgba(225,224,204,0.22);
 }
 
 .status-label {
@@ -511,7 +641,7 @@ body {
   font-weight: 700; font-variant-numeric: tabular-nums;
 }
 .status-dot.transcribing {
-  background: radial-gradient(circle at 35% 35%, rgba(225,224,204,0.6), rgba(225,224,204,0.4));
+  background-color: rgba(225,224,204,0.5);
   box-shadow: 0 0 6px rgba(225,224,204,0.3);
   animation: spin 1s linear infinite;
 }

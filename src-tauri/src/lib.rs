@@ -28,7 +28,7 @@ pub fn screen_capture_has_permission() -> bool {
 
 use state::AppState;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -47,6 +47,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.show().ok();
                 window.set_focus().ok();
+                window.emit("window-shown", ()).ok();
             }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

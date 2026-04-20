@@ -52,7 +52,7 @@ export default function AudioLevelBars(): JSX.Element {
   };
 
   const barColor = () =>
-    displayLevel() > 2 ? "rgba(80, 160, 255, 0.55)" : "rgba(255, 255, 255, 0.06)";
+    displayLevel() > 2 ? "rgba(225, 224, 204, 0.55)" : "rgba(225, 224, 204, 0.06)";
 
   return (
     <div class="audio-level-container">

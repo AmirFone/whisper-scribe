@@ -3,13 +3,14 @@ interface SearchBarProps {
   onInput: (value: string) => void;
   filterActive: boolean;
   onFilterToggle: () => void;
+  isSearching?: boolean;
 }
 
 export default function SearchBar(props: SearchBarProps) {
   return (
     <div class="search-container">
       <div class="search-row">
-        <div class="search-input-wrapper">
+        <div class="search-input-wrapper" data-loading={props.isSearching ? "true" : undefined}>
           <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
