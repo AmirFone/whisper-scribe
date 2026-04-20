@@ -4,7 +4,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 
 pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -42,32 +42,38 @@ fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         window.show().ok();
         window.set_focus().ok();
+        window.emit("window-shown", ()).ok();
     }
 }
 
 fn toggle_window_visibility(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
-            window.hide().ok();
+            window.emit("request-hide", ()).ok();
         } else {
             window.show().ok();
             window.set_focus().ok();
+            window.emit("window-shown", ()).ok();
         }
     }
 }
 
-/// Tray icon: a page-with-waveform glyph rendered as a template image
-/// (black on transparent — macOS inverts for dark mode).
+/// Tray icon: a 3×3 grid of rounded-square outlines with the middle-right
+/// cell filled, matching the main app logo's "lit cell" motif. Rendered as a
+/// template image (black on transparent — macOS inverts for dark mode).
 fn make_icon() -> Image<'static> {
     const SIZE: u32 = 44; // @2x for retina
-    const PAGE_L: i32 = 10;
-    const PAGE_R: i32 = 34;
-    const PAGE_T: i32 = 5;
-    const PAGE_B: i32 = 39;
-    const CORNER_R: i32 = 3;
+    const PAD: i32 = 4; // outer padding from edges
+    const GAP: i32 = 2; // gap between cells
+    // 3 cells + 2 gaps + 2 pads = SIZE  →  cell size = (SIZE - 2*PAD - 2*GAP) / 3
+    const CELL: i32 = (SIZE as i32 - 2 * PAD - 2 * GAP) / 3; // = 10
+    const STROKE: i32 = 2;
+    const CORNER_R: i32 = 2;
+    // The filled cell position (row, col) with 0-indexed rows top-to-bottom.
+    // Middle row, right column mirrors the logo's lit square.
+    const FILLED: (i32, i32) = (1, 2);
 
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let cx = SIZE as i32 / 2;
 
     let set = |rgba: &mut Vec<u8>, x: i32, y: i32, a: u8| {
         if x >= 0 && x < SIZE as i32 && y >= 0 && y < SIZE as i32 {
@@ -81,60 +87,79 @@ fn make_icon() -> Image<'static> {
         }
     };
 
-    // Page edges
-    for x in (PAGE_L + CORNER_R)..=(PAGE_R - CORNER_R) {
-        for w in 0..2 {
-            set(&mut rgba, x, PAGE_T + w, 255);
-            set(&mut rgba, x, PAGE_B - w, 255);
-        }
-    }
-    for y in (PAGE_T + CORNER_R)..=(PAGE_B - CORNER_R) {
-        for w in 0..2 {
-            set(&mut rgba, PAGE_L + w, y, 255);
-            set(&mut rgba, PAGE_R - w, y, 255);
-        }
-    }
+    // Paint a rounded rectangle. `filled=true` paints the interior solid; else
+    // only the outlined border (thickness = STROKE) with rounded corners.
+    let draw_cell = |rgba: &mut Vec<u8>, x0: i32, y0: i32, filled: bool| {
+        let x1 = x0 + CELL - 1;
+        let y1 = y0 + CELL - 1;
 
-    // Rounded corners
-    for a in 0..=90 {
-        let rad = (a as f32).to_radians();
-        let dx = (CORNER_R as f32 * rad.cos()) as i32;
-        let dy = (CORNER_R as f32 * rad.sin()) as i32;
-        set(&mut rgba, PAGE_L + CORNER_R - dx, PAGE_T + CORNER_R - dy, 255);
-        set(&mut rgba, PAGE_L + CORNER_R - dx + 1, PAGE_T + CORNER_R - dy, 255);
-        set(&mut rgba, PAGE_R - CORNER_R + dx, PAGE_T + CORNER_R - dy, 255);
-        set(&mut rgba, PAGE_R - CORNER_R + dx - 1, PAGE_T + CORNER_R - dy, 255);
-        set(&mut rgba, PAGE_L + CORNER_R - dx, PAGE_B - CORNER_R + dy, 255);
-        set(&mut rgba, PAGE_L + CORNER_R - dx + 1, PAGE_B - CORNER_R + dy, 255);
-        set(&mut rgba, PAGE_R - CORNER_R + dx, PAGE_B - CORNER_R + dy, 255);
-        set(&mut rgba, PAGE_R - CORNER_R + dx - 1, PAGE_B - CORNER_R + dy, 255);
-    }
+        // Corner-aware hit test: a pixel is "inside" the rounded box if it's
+        // inside the axis-aligned box AND, when inside a corner quadrant,
+        // within CORNER_R of the corner center.
+        let inside = |x: i32, y: i32| -> bool {
+            if x < x0 || x > x1 || y < y0 || y > y1 {
+                return false;
+            }
+            let (cx, cy) = if x < x0 + CORNER_R && y < y0 + CORNER_R {
+                (x0 + CORNER_R, y0 + CORNER_R)
+            } else if x > x1 - CORNER_R && y < y0 + CORNER_R {
+                (x1 - CORNER_R, y0 + CORNER_R)
+            } else if x < x0 + CORNER_R && y > y1 - CORNER_R {
+                (x0 + CORNER_R, y1 - CORNER_R)
+            } else if x > x1 - CORNER_R && y > y1 - CORNER_R {
+                (x1 - CORNER_R, y1 - CORNER_R)
+            } else {
+                return true; // center / straight edges
+            };
+            let dx = x - cx;
+            let dy = y - cy;
+            dx * dx + dy * dy <= CORNER_R * CORNER_R
+        };
 
-    // Audio waveform (5 bars)
-    let wave_bars: [(i32, i32); 5] = [
-        (cx - 8, 6),
-        (cx - 4, 10),
-        (cx, 14),
-        (cx + 4, 10),
-        (cx + 8, 6),
-    ];
-    let wave_cy = 22i32;
-    for &(bx, height) in &wave_bars {
-        let half = height / 2;
-        for y in (wave_cy - half)..=(wave_cy + half) {
-            for w in 0..3 {
-                set(&mut rgba, bx + w - 1, y, 255);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if !inside(x, y) {
+                    continue;
+                }
+                if filled {
+                    set(rgba, x, y, 255);
+                } else {
+                    // Border-only: paint pixel if NOT inside the inner
+                    // inset-by-STROKE box.
+                    let ix0 = x0 + STROKE;
+                    let iy0 = y0 + STROKE;
+                    let ix1 = x1 - STROKE;
+                    let iy1 = y1 - STROKE;
+                    let in_inner = x >= ix0 && x <= ix1 && y >= iy0 && y <= iy1 && {
+                        let (cx, cy) = if x < ix0 + CORNER_R && y < iy0 + CORNER_R {
+                            (ix0 + CORNER_R, iy0 + CORNER_R)
+                        } else if x > ix1 - CORNER_R && y < iy0 + CORNER_R {
+                            (ix1 - CORNER_R, iy0 + CORNER_R)
+                        } else if x < ix0 + CORNER_R && y > iy1 - CORNER_R {
+                            (ix0 + CORNER_R, iy1 - CORNER_R)
+                        } else if x > ix1 - CORNER_R && y > iy1 - CORNER_R {
+                            (ix1 - CORNER_R, iy1 - CORNER_R)
+                        } else {
+                            (x, y)
+                        };
+                        let dx = x - cx;
+                        let dy = y - cy;
+                        dx * dx + dy * dy <= CORNER_R * CORNER_R
+                    };
+                    if !in_inner {
+                        set(rgba, x, y, 255);
+                    }
+                }
             }
         }
-        set(&mut rgba, bx, wave_cy - half - 1, 180);
-        set(&mut rgba, bx, wave_cy + half + 1, 180);
-    }
+    };
 
-    // Text lines below waveform
-    for &y in &[31i32, 34] {
-        for x in (PAGE_L + 5)..=(PAGE_R - 5) {
-            set(&mut rgba, x, y, 140);
-            set(&mut rgba, x, y + 1, 140);
+    for row in 0..3 {
+        for col in 0..3 {
+            let x0 = PAD + col * (CELL + GAP);
+            let y0 = PAD + row * (CELL + GAP);
+            let filled = (row, col) == FILLED;
+            draw_cell(&mut rgba, x0, y0, filled);
         }
     }
 
