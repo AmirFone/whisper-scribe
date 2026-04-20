@@ -1,10 +1,10 @@
+<p align="center">
+  <img src="docs/screenshots/logo.png" width="480" alt="Whisper Scribe" />
+</p>
+
 # Whisper Scribe
 
 A fast, lightweight macOS menu bar app that continuously records audio and transcribes it locally using Whisper Large v3 on Apple Silicon GPU. Periodically captures screenshots and analyzes them with a local vision model for screen context logging. Everything stays on-device — no cloud, no subscriptions.
-
-<p align="center">
-  <img src="docs/screenshots/app-icon.png" width="128" alt="Whisper Scribe Icon" />
-</p>
 
 <p align="center">
   <img src="docs/screenshots/app-main.png" width="340" alt="Unified Timeline" />
