@@ -115,12 +115,11 @@ pub fn run() {
 fn apply_macos_vibrancy(app: &tauri::App) {
     use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
     if let Some(window) = app.get_webview_window("main") {
-        // NSVisualEffectState::Active prevents the grey flash on focus loss.
         apply_vibrancy(
             &window,
-            NSVisualEffectMaterial::HudWindow,
+            NSVisualEffectMaterial::Dark,
             Some(NSVisualEffectState::Active),
-            None,
+            Some(18.0),
         )
         .ok();
     }
