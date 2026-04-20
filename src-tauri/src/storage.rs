@@ -136,9 +136,15 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_segments_hour_key ON segments(hour_key);
             CREATE INDEX IF NOT EXISTS idx_segments_timestamp ON segments(timestamp);
             CREATE INDEX IF NOT EXISTS idx_segments_type ON segments(segment_type);
+            -- Compound index for ordered within-hour reads (load_hour_slots_segments).
+            CREATE INDEX IF NOT EXISTS idx_segments_hour_ts
+                ON segments(hour_key, timestamp);
 
+            -- Trigram tokenizer enables substring, suffix, and typo-tolerant search.
+            -- Existing databases (created before this tokenizer switch) are migrated
+            -- by `migrate_fts_to_trigram` below.
             CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts
-                USING fts5(text, content='segments', content_rowid='id');
+                USING fts5(text, content='segments', content_rowid='id', tokenize='trigram');
 
             CREATE TRIGGER IF NOT EXISTS segments_ai AFTER INSERT ON segments BEGIN
                 INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
@@ -156,6 +162,7 @@ impl Storage {
 
         migrate_text_timestamps_to_epoch_ms(&conn)?;
         migrate_slots_to_segments(&conn)?;
+        migrate_fts_to_trigram(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -240,41 +247,41 @@ impl Storage {
     }
 
     pub fn search_segments(&self, query: &str) -> Result<Vec<UnifiedHourSlot>, String> {
-        let sanitized = sanitize_fts_query(query);
+        let sanitized = fts_substring_query(query);
         if sanitized.is_empty() {
             return Ok(Vec::new());
         }
 
         let conn = self.conn.lock();
-        let mut match_stmt = conn
+
+        // Single query: find matching hours + their aggregates in one shot. The
+        // MAX(timestamp) alias is reused for both HAVING filtering (only keep
+        // hours that actually had a matching segment) and ORDER BY.
+        let mut stmt = conn
             .prepare_cached(
-                "SELECT DISTINCT s.hour_key
+                "SELECT s.hour_key,
+                        MIN(s.timestamp) AS earliest,
+                        MAX(s.timestamp) AS latest,
+                        COUNT(*) AS total,
+                        MAX(CASE WHEN f.rowid IS NOT NULL THEN s.timestamp END) AS last_match
                  FROM segments s
-                 JOIN segments_fts f ON s.id = f.rowid
-                 WHERE segments_fts MATCH ?1
-                 ORDER BY s.timestamp DESC
+                 LEFT JOIN segments_fts f
+                        ON s.id = f.rowid
+                       AND segments_fts MATCH ?1
+                 GROUP BY s.hour_key
+                 HAVING last_match IS NOT NULL
+                 ORDER BY last_match DESC
                  LIMIT 50",
             )
             .map_err(|e| format!("Search failed: {e}"))?;
 
-        let hour_keys: Vec<String> = match_stmt
-            .query_map(params![sanitized], |row| row.get(0))
+        let hours: Vec<(String, i64, i64, i64)> = stmt
+            .query_map(params![sanitized], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .map_err(|e| format!("Search map failed: {e}"))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| format!("Search decode failed: {e}"))?;
-
-        let hours: Vec<(String, i64, i64, i64)> = hour_keys
-            .into_iter()
-            .filter_map(|hk| {
-                conn.query_row(
-                    "SELECT hour_key, MIN(timestamp), MAX(timestamp), COUNT(*)
-                     FROM segments WHERE hour_key = ?1",
-                    params![hk],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                )
-                .ok()
-            })
-            .collect();
 
         self.load_hour_slots_segments(&conn, hours)
     }
@@ -357,32 +364,52 @@ impl Storage {
         conn: &Connection,
         hours: Vec<(String, i64, i64, i64)>,
     ) -> Result<Vec<UnifiedHourSlot>, String> {
-        let mut seg_stmt = conn
-            .prepare_cached(
-                "SELECT id, hour_key, segment_type, text, timestamp, device
-                 FROM segments
-                 WHERE hour_key = ?1
-                 ORDER BY timestamp ASC",
-            )
+        if hours.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch every matching hour's segments in one round-trip. Collapses the
+        // prior N+1 (one query per hour) into a single IN-clause read, which
+        // matters as the timeline grows.
+        let placeholders = vec!["?"; hours.len()].join(",");
+        let sql = format!(
+            "SELECT id, hour_key, segment_type, text, timestamp, device
+             FROM segments
+             WHERE hour_key IN ({placeholders})
+             ORDER BY hour_key ASC, timestamp ASC",
+        );
+
+        let hour_keys: Vec<&str> = hours.iter().map(|(hk, _, _, _)| hk.as_str()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| format!("Segment query failed: {e}"))?;
+
+        let all_segments: Vec<Segment> = stmt
+            .query_map(rusqlite::params_from_iter(hour_keys.iter()), |row| {
+                Ok(Segment {
+                    id: row.get(0)?,
+                    hour_key: row.get(1)?,
+                    segment_type: row.get(2)?,
+                    text: row.get(3)?,
+                    timestamp: row.get(4)?,
+                    device: row.get(5)?,
+                })
+            })
+            .map_err(|e| format!("Segment map failed: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("Segment decode failed: {e}"))?;
+
+        // Bucket segments by hour_key. The caller's `hours` vec defines output
+        // order, so we build a temporary map keyed by hour_key and drain it.
+        let mut by_hour: std::collections::HashMap<String, Vec<Segment>> =
+            std::collections::HashMap::with_capacity(hours.len());
+        for seg in all_segments {
+            by_hour.entry(seg.hour_key.clone()).or_default().push(seg);
+        }
 
         let mut result = Vec::with_capacity(hours.len());
         for (hour_key, earliest, latest, count) in hours {
-            let segments: Vec<Segment> = seg_stmt
-                .query_map(params![hour_key], |row| {
-                    Ok(Segment {
-                        id: row.get(0)?,
-                        hour_key: row.get(1)?,
-                        segment_type: row.get(2)?,
-                        text: row.get(3)?,
-                        timestamp: row.get(4)?,
-                        device: row.get(5)?,
-                    })
-                })
-                .map_err(|e| format!("Segment map failed: {e}"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| format!("Segment decode failed: {e}"))?;
-
+            let segments = by_hour.remove(&hour_key).unwrap_or_default();
             result.push(UnifiedHourSlot {
                 hour_key,
                 segments,
@@ -527,20 +554,82 @@ fn parse_timestamp_value(s: &str) -> i64 {
         .unwrap_or(0)
 }
 
-fn sanitize_fts_query(query: &str) -> String {
+/// Build an FTS5 MATCH query suited to the trigram tokenizer.
+///
+/// The trigram tokenizer turns MATCH into substring search, so each token we
+/// pass is looked up as a contiguous substring anywhere in the indexed text.
+/// Tokens shorter than 3 characters can't produce a trigram and would silently
+/// return nothing, so we drop them. Double quotes inside user input are
+/// doubled so they stay literal inside the FTS5 phrase syntax.
+fn fts_substring_query(query: &str) -> String {
+    const MIN_TRIGRAM_LEN: usize = 3;
     query
         .split_whitespace()
-        .filter(|w| !w.is_empty())
+        .filter(|w| w.chars().count() >= MIN_TRIGRAM_LEN)
         .map(|word| {
-            let clean: String = word
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '\'' || *c == '-')
-                .collect();
-            if clean.is_empty() { String::new() } else { format!("\"{clean}\"") }
+            let escaped = word.replace('"', "\"\"");
+            format!("\"{escaped}\"")
         })
-        .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Migrate an existing `segments_fts` table to the trigram tokenizer.
+///
+/// Idempotent: if the existing table already uses the trigram tokenizer, or
+/// the table doesn't yet exist (fresh install), this is a no-op. Otherwise it
+/// drops the old inverted index + triggers, recreates them with the trigram
+/// tokenizer, and rebuilds the index from the authoritative `segments` table.
+/// The rebuild cost scales linearly with corpus size — measured in seconds
+/// for typical datasets (~10s of thousands of rows).
+fn migrate_fts_to_trigram(conn: &Connection) -> Result<(), String> {
+    let existing_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='segments_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let needs_migration = match &existing_sql {
+        Some(sql) => !sql.to_lowercase().contains("trigram"),
+        None => false, // Table will be created fresh with trigram by the caller.
+    };
+
+    if !needs_migration {
+        return Ok(());
+    }
+
+    log::info!("Migrating segments_fts to trigram tokenizer — this may take a few seconds");
+
+    conn.execute_batch(
+        "BEGIN;
+         DROP TRIGGER IF EXISTS segments_ai;
+         DROP TRIGGER IF EXISTS segments_au;
+         DROP TRIGGER IF EXISTS segments_ad;
+         DROP TABLE IF EXISTS segments_fts;
+         CREATE VIRTUAL TABLE segments_fts
+             USING fts5(text, content='segments', content_rowid='id', tokenize='trigram');
+         CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
+             INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
+         END;
+         CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
+             INSERT INTO segments_fts(segments_fts, rowid, text) VALUES('delete', old.id, old.text);
+             INSERT INTO segments_fts(rowid, text) VALUES (new.id, new.text);
+         END;
+         CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
+             INSERT INTO segments_fts(segments_fts, rowid, text) VALUES('delete', old.id, old.text);
+         END;
+         INSERT INTO segments_fts(segments_fts) VALUES('rebuild');
+         COMMIT;",
+    )
+    .map_err(|e| {
+        let _ = conn.execute_batch("ROLLBACK;");
+        format!("FTS trigram migration failed: {e}")
+    })?;
+
+    log::info!("FTS trigram migration complete");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -660,6 +749,50 @@ mod tests {
     }
 
     #[test]
+    fn test_search_trigram_substring() {
+        // Trigram tokenizer matches any substring, so mid-word hits work.
+        let (storage, _dir) = test_storage();
+        let ts = Utc.with_ymd_and_hms(2024, 3, 10, 9, 0, 0).unwrap();
+        storage.insert_transcription("I use ChatGPT every day", &ts, "Mic").unwrap();
+
+        // Mid-word match: "gpt" → finds "ChatGPT"
+        assert_eq!(storage.search_segments("gpt").unwrap().len(), 1);
+        // Prefix match: "Cha" → finds "ChatGPT"
+        assert_eq!(storage.search_segments("Cha").unwrap().len(), 1);
+        // Suffix match: "GPT" → still finds it
+        assert_eq!(storage.search_segments("GPT").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_search_rejects_short_queries() {
+        // Queries shorter than a trigram can't form valid grams, so they're
+        // filtered out before hitting FTS5 to avoid undefined behavior.
+        let (storage, _dir) = test_storage();
+        let ts = Utc.with_ymd_and_hms(2024, 3, 10, 9, 0, 0).unwrap();
+        storage.insert_transcription("something meaningful", &ts, "Mic").unwrap();
+
+        assert!(storage.search_segments("a").unwrap().is_empty());
+        assert!(storage.search_segments("so").unwrap().is_empty());
+        // 3 chars is the threshold
+        assert_eq!(storage.search_segments("som").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_migrate_fts_to_trigram_idempotent() {
+        // Running the migration twice must not break the index or duplicate rows.
+        let (storage, _dir) = test_storage();
+        let ts = Utc.with_ymd_and_hms(2024, 3, 10, 9, 0, 0).unwrap();
+        storage.insert_transcription("before migration", &ts, "Mic").unwrap();
+
+        // Second call is a no-op because the table already uses trigram.
+        let conn = storage.conn.lock();
+        migrate_fts_to_trigram(&conn).unwrap();
+        drop(conn);
+
+        assert_eq!(storage.search_segments("migration").unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_date_range() {
         let (storage, _dir) = test_storage();
         let d1 = Utc.with_ymd_and_hms(2024, 3, 10, 9, 0, 0).unwrap();
@@ -732,10 +865,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fts_sanitize() {
-        assert_eq!(sanitize_fts_query("hello world"), "\"hello\" \"world\"");
-        assert_eq!(sanitize_fts_query("test\"broken"), "\"testbroken\"");
-        assert_eq!(sanitize_fts_query(""), "");
+    fn test_fts_substring_query() {
+        // Normal multi-token query → each word becomes a quoted phrase, implicitly AND-ed.
+        assert_eq!(fts_substring_query("hello world"), "\"hello\" \"world\"");
+        // Internal double-quotes are doubled to stay literal inside FTS5 phrase syntax.
+        assert_eq!(fts_substring_query("say \"hi\""), "\"say\" \"\"\"hi\"\"\"");
+        // Tokens shorter than 3 chars can't form a trigram and are dropped.
+        assert_eq!(fts_substring_query("of a team"), "\"team\"");
+        // Empty or all-short → empty query (caller short-circuits to no results).
+        assert_eq!(fts_substring_query(""), "");
+        assert_eq!(fts_substring_query("a b"), "");
     }
 
     #[test]
