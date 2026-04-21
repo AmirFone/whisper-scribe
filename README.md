@@ -6,6 +6,17 @@
 
 A fast, lightweight macOS menu bar app that continuously records audio and transcribes it locally using Whisper Large v3 on Apple Silicon GPU. Periodically captures screenshots and analyzes them with a local vision model for screen context logging. Everything stays on-device — no cloud, no subscriptions.
 
+## Install with Homebrew
+
+```sh
+brew tap amirfone/whisper-scribe
+brew install --cask whisper-scribe
+```
+
+Apple Silicon (M1/M2/M3/M4) on macOS 14+ only. On first launch, macOS may warn that the app is from an unidentified developer — right-click the app and choose **Open**, or grant it permission in *System Settings → Privacy & Security*. Then allow microphone and screen-recording access when prompted.
+
+Upgrades: `brew upgrade --cask whisper-scribe` (your transcriptions and screen-context history are preserved). Full removal including local data: `brew uninstall --zap whisper-scribe`.
+
 <p align="center">
   <img src="docs/screenshots/app-main.png" width="340" alt="Unified Timeline" />
   <img src="docs/screenshots/search-highlight.png" width="340" alt="Search Highlights" />
@@ -49,10 +60,9 @@ Rust (Tauri v2) + SolidJS + MLX Whisper + MLX-VLM/Qwen3.5 (Python) + SQLite FTS5
 - ~6 GB disk for Qwen3.5-9B-MLX-4bit vision model (downloads automatically)
 - Screen Recording permission (prompted on first capture)
 
-## Install
+## Build from source
 
 ```bash
-# Build from source
 npm install
 cargo tauri build
 
